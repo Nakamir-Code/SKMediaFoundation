@@ -35,11 +35,7 @@ int main(void) {
         ui_window_end();
 	});
 
-    clean();
-    return 0;
-}
-
-void clean() {
     nv12_tex_release(nv12_tex);
     nv12_sprite_release(nv12_sprite);
+    return 0;
 }
