@@ -21,6 +21,9 @@ set(NAK_SRC_CODE
 	src/nv12_tex.h
 	src/nv12_sprite.cpp
 	src/nv12_sprite.h
+
+  src/mf_mp4_source_reader.h
+  src/mf_mp4_source_reader.cpp
 )
 
 # Add source files to our target executable
@@ -33,3 +36,24 @@ add_executable( SKVideoDecoder
 target_link_libraries( SKVideoDecoder
   PRIVATE StereoKitC
 )
+
+# Prevent warning C4530
+IF(MSVC)
+    SET(CMAKE_CXX_FLAGS "/EHsc")
+ENDIF(MSVC)
+
+# copy assets to output directory
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+  add_custom_command(
+      TARGET SKVideoDecoder POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_directory
+              ${CMAKE_SOURCE_DIR}/Assets
+              ${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/Assets)
+endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
+  add_custom_command(
+    TARGET SKVideoDecoder POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_SOURCE_DIR}/Assets
+            ${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/Appx/Assets)
+endif()

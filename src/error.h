@@ -20,7 +20,6 @@ namespace nakamir
             static char s_str[64] = {};
             sprintf_s(s_str, "Failure with HRESULT of %08X",
                 static_cast<unsigned int>(result));
-            log_err(s_str);
             return s_str;
         }
 
