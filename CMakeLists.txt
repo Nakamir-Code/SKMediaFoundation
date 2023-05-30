@@ -9,8 +9,8 @@ set(SK_BUILD_TESTS       OFF CACHE INTERNAL "")
 set(SK_BUILD_SHARED_LIBS OFF CACHE INTERNAL "")
 FetchContent_Declare(
   StereoKitC
-  GIT_REPOSITORY https://github.com/Nakamir-Code/StereoKit.git #https://github.com/StereoKit/StereoKit.git
-  GIT_TAG        f0883c4621df70a61bf38ae4cda2ac7b9a39e049
+  GIT_REPOSITORY https://github.com/StereoKit/StereoKit.git
+  GIT_TAG        5efb7404ede3a07c1fe7b14d3914fd60d56fc48d
 )
 FetchContent_MakeAvailable(StereoKitC)
 
@@ -22,8 +22,8 @@ set(NAK_SRC_CODE
 	src/nv12_sprite.cpp
 	src/nv12_sprite.h
 
-  src/mf_mp4_source_reader.h
-  src/mf_mp4_source_reader.cpp
+  src/mf_decode_to_buffer.h
+  src/mf_decode_to_buffer.cpp
 )
 
 # Add source files to our target executable

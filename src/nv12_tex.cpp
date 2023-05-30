@@ -56,7 +56,7 @@ namespace nakamir {
 		// For dynamic textures, just upload the new value into the texture!
 		D3D11_MAPPED_SUBRESOURCE tex_mem = {};
 
-		bool on_main = backend_d3d11_get_d3d_main_thread_id() == GetCurrentThreadId();
+		bool on_main = backend_d3d11_get_main_thread_id() == GetCurrentThreadId();
 
 		try
 		{
@@ -64,8 +64,8 @@ namespace nakamir {
 			if (on_main) {
 				pD3D_device->GetImmediateContext(&pContext);
 			} else {
-				pContext = (ID3D11DeviceContext*)backend_d3d11_get_d3d_deferred_context();
-				WaitForSingleObject(backend_d3d11_get_d3d_deferred_mtx(), INFINITE);
+				pContext = (ID3D11DeviceContext*)backend_d3d11_get_deferred_d3d_context();
+				WaitForSingleObject(backend_d3d11_get_deferred_mtx(), INFINITE);
 			}
 
 			int luminance_size = nv12_tex->width * nv12_tex->height;
@@ -87,7 +87,7 @@ namespace nakamir {
 		}
 
 		if (!on_main) {
-			ReleaseMutex(backend_d3d11_get_d3d_deferred_mtx());
+			ReleaseMutex(backend_d3d11_get_deferred_mtx());
 		}
 	}
 
