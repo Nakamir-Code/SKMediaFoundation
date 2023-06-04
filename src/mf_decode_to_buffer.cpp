@@ -242,7 +242,7 @@ namespace nakamir {
 
 						if (mftProcessOutput == S_OK && pH264DecodeOutSample != NULL)
 						{
-							// Write decoded sample to capture file.
+							// Write the decoded sample to the nv12 texture.
 							ComPtr<IMFMediaBuffer> buffer;
 							ThrowIfFailed(pH264DecodeOutSample->ConvertToContiguousBuffer(&buffer));
 
