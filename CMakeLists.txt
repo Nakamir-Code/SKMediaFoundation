@@ -39,21 +39,23 @@ target_link_libraries( SKVideoDecoder
 
 # Prevent warning C4530
 IF(MSVC)
-    SET(CMAKE_CXX_FLAGS "/EHsc")
+	SET(CMAKE_CXX_FLAGS "/EHsc")
 ENDIF(MSVC)
 
 # copy assets to output directory
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
   add_custom_command(
-      TARGET SKVideoDecoder POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy_directory
-              ${CMAKE_SOURCE_DIR}/Assets
-              ${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/Assets)
+	  sTARGET SKVideoDecoder PRE_LINK
+	  COMMAND ${CMAKE_COMMAND} -E copy_directory
+			  ${CMAKE_SOURCE_DIR}/Assets
+			  ${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/Assets)
 endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
   add_custom_command(
-    TARGET SKVideoDecoder POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            ${CMAKE_SOURCE_DIR}/Assets
-            ${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/Appx/Assets)
+	TARGET SKVideoDecoder PRE_LINK
+	COMMAND ${CMAKE_COMMAND} -E copy_directory
+			${CMAKE_SOURCE_DIR}/Assets
+			${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/Appx/Assets)
 endif()
+
+set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT SKVideoDecoder)

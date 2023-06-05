@@ -3,7 +3,6 @@
 #include "nv12_tex.h"
 #include "nv12_sprite.h"
 #include "mf_decode_to_buffer.h"
-#include <thread>
 
 using namespace sk;
 using namespace nakamir;
@@ -32,7 +31,7 @@ int main(void) {
 	nv12_tex = nv12_tex_create(video_width, video_height);
 	nv12_sprite = nv12_sprite_create(nv12_tex, sprite_type_atlased);
 
-	std::thread source_reader_thread(mf_mp4_source_reader, L"http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4", nv12_tex);
+	mf_mp4_source_reader(L"http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4", nv12_tex);
 
 	sk_run([]() {
 		ui_window_begin("Video", window_pose, video_aspect_ratio, ui_win_normal, ui_move_face_user);

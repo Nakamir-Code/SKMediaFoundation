@@ -90,5 +90,4 @@ namespace nakamir {
 			ReleaseMutex(backend_d3d11_get_deferred_mtx());
 		}
 	}
-
 } // namespace nakamir
