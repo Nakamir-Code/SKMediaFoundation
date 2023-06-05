@@ -184,14 +184,14 @@ namespace nakamir {
 				 ******************************************************************/
 				 // Create input media type for decoder and copy all items from file video media type
 				ComPtr<IMFMediaType> pInputMediaType;
-				MFCreateMediaType(&pInputMediaType);
+				ThrowIfFailed(MFCreateMediaType(&pInputMediaType));
 				ThrowIfFailed(pFileVideoMediaType->CopyAllItems(pInputMediaType.Get()));
 				ThrowIfFailed(pDecoderTransform->SetInputType(0, pInputMediaType.Get(), 0));
 
 				UINT numSupportedProfiles = pD3DVideoDevice->GetVideoDecoderProfileCount();
 				GUID desiredDecoderProfile = D3D11_DECODER_PROFILE_H264_VLD_NOFGT;
 				BOOL isDecoderProfileSupported = FALSE;
-				for (int i = 0; i < numSupportedProfiles; ++i)
+				for (UINT i = 0; i < numSupportedProfiles; ++i)
 				{
 					GUID decoderProfile;
 					ThrowIfFailed(pD3DVideoDevice->GetVideoDecoderProfile(i, &decoderProfile));
@@ -227,7 +227,7 @@ namespace nakamir {
 				}
 
 				std::vector<D3D11_VIDEO_DECODER_CONFIG> videoDecoderConfigList;
-				for (int i = 0; i < numSupportedConfigs; ++i)
+				for (UINT i = 0; i < numSupportedConfigs; ++i)
 				{
 					D3D11_VIDEO_DECODER_CONFIG videoDecoderConfig;
 					if (SUCCEEDED(pD3DVideoDevice->GetVideoDecoderConfig(&videoDecoderDesc, i, &videoDecoderConfig)))
@@ -268,7 +268,7 @@ namespace nakamir {
 				UINT32 minSampleCount = 3;
 				ThrowIfFailed(pOutputStreamAttributes->SetUINT32(MF_SA_MINIMUM_OUTPUT_SAMPLE_COUNT, minSampleCount));
 
-				int numSurfaces = 0;
+				UINT numSurfaces = 0;
 				// More reference frames will require slightly more CPU power for playback (TODO: confirm this claim)
 				// It's recommended to have at least 3. The default is limited to 1 and max is 16.
 				numSurfaces += 3; // Surfaces for reference frames
@@ -333,7 +333,7 @@ namespace nakamir {
 
 				/******************************************************************/
 			}
-			catch (const std::exception& e)
+			catch (const std::exception&)
 			{
 				/******************************************************************
 				 * Fallback to Software Decoding
@@ -345,7 +345,7 @@ namespace nakamir {
 
 				// Create output media type for decoder and copy all items from file video media type
 				ComPtr<IMFMediaType> pOutputMediaType;
-				MFCreateMediaType(&pOutputMediaType);
+				ThrowIfFailed(MFCreateMediaType(&pOutputMediaType));
 				ThrowIfFailed(pFileVideoMediaType->CopyAllItems(pOutputMediaType.Get()));
 				ThrowIfFailed(pOutputMediaType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12));
 
