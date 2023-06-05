@@ -21,18 +21,34 @@ using Microsoft::WRL::ComPtr;
 
 namespace nakamir {
 
+	// We need these fields to stay alive when out of scope
 	std::thread sourceReaderThread;
 	ComPtr<IMFSourceReader> pSourceReader;
+	ComPtr<IMFMediaType> pFileVideoMediaType;
 	ComPtr<IMFTransform> pDecoderTransform; // This is the H264 Decoder MFT
-	ComPtr<ID3D11Texture2D> pOutputTexture;
 	IMFActivate** ppActivate = NULL;
+	nv12_tex_t _nv12_tex;
 
-	void print_stats(IMFTransform* pDecoderTransform);
-	void main_loop_cpu(IMFSourceReader* pSourceReader, IMFTransform* pDecoderTransform, ID3D11Texture2D* pOutputTexture, nv12_tex_t nv12_tex);
+	// GPU-specific requirements
+	HANDLE deviceHandle;
+	ComPtr<IMFDXGIDeviceManager> pDXGIDeviceManager;
+	ComPtr<ID3D11VideoContext> pVideoContext;
+	ComPtr<ID3D11VideoDecoder> pVideoDecoder;
+	ComPtr<ID3D11Texture2D> pOutputTexture;
+	std::vector<ComPtr<IMFSample>> outputSamples;
+	std::vector<ComPtr<ID3D11VideoDecoderOutputView>> outputViews;
+
+	void print_stats();
+	void create_dx_video_decoder();
+	void create_fallback_video_decoder();
+	void decode_loop_cpu();
+	void decode_loop_gpu();
 	void shutdown();
+	void release_dx_resources();
 
 	void mf_mp4_source_reader(const wchar_t* filename, nv12_tex_t nv12_tex)
 	{
+		_nv12_tex = nv12_tex;
 		try
 		{
 			// Start up the Media Foundation platform
@@ -65,7 +81,6 @@ namespace nakamir {
 			ThrowIfFailed(MFCreateSourceReaderFromMediaSource(mediaFileSource.Get(), pVideoReaderAttributes.Get(), &pSourceReader));
 
 			// Get the current media type of the first video stream
-			ComPtr<IMFMediaType> pFileVideoMediaType;
 			ThrowIfFailed(pSourceReader->GetCurrentMediaType((DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM, &pFileVideoMediaType));
 
 			// Get the major and subtype of the mp4 video
@@ -122,12 +137,17 @@ namespace nakamir {
 
 			try
 			{
+				//throw std::exception("TODO: finish decoding. Falling back to software decoding...");
+
 				/******************************************************************
 				 * Open a Device Handle
 				 *
 				 * https://learn.microsoft.com/en-us/windows/win32/medfound/supporting-direct3d-11-video-decoding-in-media-foundation#open-a-device-handle
 				 ******************************************************************/
-				 // The decoder MFT must expose the MF_SA_D3D_AWARE attribute to TRUE
+				ComPtr<IMFAttributes> pAttributes;
+				ThrowIfFailed(pDecoderTransform->GetAttributes(&pAttributes));
+
+				// The decoder MFT must expose the MF_SA_D3D_AWARE attribute to TRUE
 				UINT32 isD3DAware = false;
 				ThrowIfFailed(pAttributes->GetUINT32(MF_SA_D3D_AWARE, &isD3DAware));
 				if (isD3DAware)
@@ -141,221 +161,24 @@ namespace nakamir {
 
 				// Create the DXGI Device Manager
 				UINT resetToken;
-				ComPtr<IMFDXGIDeviceManager> pDXGIDeviceManager;
 				ThrowIfFailed(MFCreateDXGIDeviceManager(&resetToken, &pDXGIDeviceManager));
 
 				// Set the Direct3D 11 device on the DXGI Device Manager
-				ComPtr<ID3D11Device> pD3DDevice = (ID3D11Device*)backend_d3d11_get_d3d_device();
-				ThrowIfFailed(pDXGIDeviceManager->ResetDevice(pD3DDevice.Get(), resetToken));
+				ID3D11Device* pD3DDevice = (ID3D11Device*)backend_d3d11_get_d3d_device();
+				ThrowIfFailed(pDXGIDeviceManager->ResetDevice(pD3DDevice, resetToken));
 
 				// The Topology Loader calls IMFTransform::ProcessMessage with the MFT_MESSAGE_SET_D3D_MANAGER message
 				ThrowIfFailed(pDecoderTransform->ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, reinterpret_cast<ULONG_PTR>(pDXGIDeviceManager.Get())));
 
-				// Call IMFDXGIDeviceManager::OpenDeviceHandle to get a handle to the Direct3D 11 device
-				HANDLE deviceHandle;
-				ThrowIfFailed(pDXGIDeviceManager->OpenDeviceHandle(&deviceHandle));
-
-				// Call IMFDXGIDeviceManager::GetVideoService to get a pointer to the D3D11Device
-				ThrowIfFailed(pDXGIDeviceManager->GetVideoService(deviceHandle, IID_PPV_ARGS(&pD3DDevice)));
-
-				// Call IMFDXGIDeviceManager::GetVideoService to get a pointer to the video accelerator
-				ComPtr<ID3D11VideoDevice> pD3DVideoDevice;
-				ThrowIfFailed(pDXGIDeviceManager->GetVideoService(deviceHandle, IID_PPV_ARGS(&pD3DVideoDevice)));
-
-				// Call ID3D11Device::GetImmediateContext to get an ID3D11DeviceContext pointer
-				ComPtr<ID3D11DeviceContext> pDeviceContext;
-				pD3DDevice->GetImmediateContext(&pDeviceContext);
-
-				// Call QueryInterface on the ID3D11DeviceContext to get an ID3D11VideoContext pointer
-				ComPtr<ID3D11VideoContext> pVideoContext;
-				ThrowIfFailed(pDeviceContext->QueryInterface(__uuidof(ID3D11VideoContext), (void**)&pVideoContext));
-
-				// It is recommended that you use multi-thread protection on the device context to prevent deadlock issues 
-				// that can sometimes happen when you call ID3D11VideoContext::GetDecoderBuffer or ID3D11VideoContext::ReleaseDecoderBuffer
-				ComPtr<ID3D10Multithread> pMultiThread;
-				ThrowIfFailed(pD3DDevice->QueryInterface(__uuidof(ID3D10Multithread), (void**)&pMultiThread));
-				pMultiThread->SetMultithreadProtected(TRUE);
-				/******************************************************************/
-
-				/******************************************************************
-				 * Find a Decoder Configuration
-				 *
-				 * https://learn.microsoft.com/en-us/windows/win32/medfound/supporting-direct3d-11-video-decoding-in-media-foundation#find-a-decoder-configuration
-				 ******************************************************************/
-				 // Create input media type for decoder and copy all items from file video media type
-				ComPtr<IMFMediaType> pInputMediaType;
-				ThrowIfFailed(MFCreateMediaType(&pInputMediaType));
-				ThrowIfFailed(pFileVideoMediaType->CopyAllItems(pInputMediaType.Get()));
-				ThrowIfFailed(pDecoderTransform->SetInputType(0, pInputMediaType.Get(), 0));
-
-				UINT numSupportedProfiles = pD3DVideoDevice->GetVideoDecoderProfileCount();
-				GUID desiredDecoderProfile = D3D11_DECODER_PROFILE_H264_VLD_NOFGT;
-				BOOL isDecoderProfileSupported = FALSE;
-				for (UINT i = 0; i < numSupportedProfiles; ++i)
-				{
-					GUID decoderProfile;
-					ThrowIfFailed(pD3DVideoDevice->GetVideoDecoderProfile(i, &decoderProfile));
-
-					if (decoderProfile == desiredDecoderProfile)
-					{
-						isDecoderProfileSupported = true;
-						break;
-					}
-				}
-
-				if (!isDecoderProfileSupported)
-				{
-					throw std::exception("No video decoder profiles were found.");
-				}
-
-				ThrowIfFailed(pD3DVideoDevice->CheckVideoDecoderFormat(&desiredDecoderProfile, DXGI_FORMAT_NV12, &isDecoderProfileSupported));
-				if (!isDecoderProfileSupported)
-				{
-					throw std::exception("NV12 format is not supported.");
-				}
-
-				D3D11_VIDEO_DECODER_DESC videoDecoderDesc = {};
-				videoDecoderDesc.Guid = desiredDecoderProfile;
-				videoDecoderDesc.OutputFormat = DXGI_FORMAT_NV12;
-				videoDecoderDesc.SampleWidth = nv12_tex->width;
-				videoDecoderDesc.SampleHeight = nv12_tex->height;
-				UINT numSupportedConfigs = 0;
-				ThrowIfFailed(pD3DVideoDevice->GetVideoDecoderConfigCount(&videoDecoderDesc, &numSupportedConfigs));
-				if (numSupportedConfigs == 0)
-				{
-					throw std::exception("No video decoder configurations were found.");
-				}
-
-				std::vector<D3D11_VIDEO_DECODER_CONFIG> videoDecoderConfigList;
-				for (UINT i = 0; i < numSupportedConfigs; ++i)
-				{
-					D3D11_VIDEO_DECODER_CONFIG videoDecoderConfig;
-					if (SUCCEEDED(pD3DVideoDevice->GetVideoDecoderConfig(&videoDecoderDesc, i, &videoDecoderConfig)))
-					{
-						videoDecoderConfigList.push_back(videoDecoderConfig);
-					}
-				}
-
-				ComPtr<IMFMediaType> pOutputMediaType;
-				BOOL isOutputTypeConfigured = FALSE;
-				for (int i = 0; SUCCEEDED(pDecoderTransform->GetOutputAvailableType(0, i, &pOutputMediaType)); ++i)
-				{
-					GUID outSubtype = {};
-					ThrowIfFailed(pOutputMediaType->GetGUID(MF_MT_SUBTYPE, &outSubtype));
-
-					if (outSubtype == MFVideoFormat_NV12)
-					{
-						ThrowIfFailed(pDecoderTransform->SetOutputType(0, pOutputMediaType.Get(), 0));
-						isOutputTypeConfigured = TRUE;
-						break;
-					}
-				}
-
-				if (!isOutputTypeConfigured)
-				{
-					throw std::exception("Failed to set output type.");
-				}
-				/******************************************************************/
-
-				/******************************************************************
-				 * Allocating Uncompressed Buffers
-				 *
-				 * https://learn.microsoft.com/en-us/windows/win32/medfound/supporting-direct3d-11-video-decoding-in-media-foundation#find-a-decoder-configuration
-				 ******************************************************************/
-				ComPtr<IMFAttributes> pOutputStreamAttributes;
-				ThrowIfFailed(pDecoderTransform->GetOutputStreamAttributes(0, &pOutputStreamAttributes));
-
-				UINT32 minSampleCount = 3;
-				ThrowIfFailed(pOutputStreamAttributes->SetUINT32(MF_SA_MINIMUM_OUTPUT_SAMPLE_COUNT, minSampleCount));
-
-				UINT numSurfaces = 0;
-				// More reference frames will require slightly more CPU power for playback (TODO: confirm this claim)
-				// It's recommended to have at least 3. The default is limited to 1 and max is 16.
-				numSurfaces += 3; // Surfaces for reference frames
-				numSurfaces += 3; // Surfaces for deinterlacing (three surfaces)
-				numSurfaces += 0; // Surfaces that the decoder needs for buffering
-
-				UINT bindFlags = D3D11_BIND_DECODER;
-				UINT32 outputStreamBindFlags;
-				if (SUCCEEDED(pOutputStreamAttributes->GetUINT32(MF_SA_D3D11_BINDFLAGS, &outputStreamBindFlags)))
-				{
-					bindFlags |= outputStreamBindFlags;
-				}
-
-				// Create a D3D11 texture as the output buffer
-				D3D11_TEXTURE2D_DESC textureDesc = {};
-				textureDesc.Width = nv12_tex->width;
-				textureDesc.Height = nv12_tex->height;
-				textureDesc.MipLevels = 1;
-				textureDesc.ArraySize = numSurfaces;
-				textureDesc.Format = DXGI_FORMAT_NV12;
-				textureDesc.SampleDesc.Count = 1;
-				textureDesc.Usage = D3D11_USAGE_DEFAULT;
-				textureDesc.BindFlags = D3D11_BIND_DECODER | bindFlags;
-				textureDesc.CPUAccessFlags = 0;
-
-				ThrowIfFailed(pD3DDevice->CreateTexture2D(&textureDesc, nullptr, &pOutputTexture));
-
-				std::vector<ComPtr<IMFSample>> outputSamples(numSurfaces);
-				std::vector<ComPtr<ID3D11VideoDecoderOutputView>> outputViews(numSurfaces);
-				D3D11_VIDEO_DECODER_OUTPUT_VIEW_DESC viewDesc = {};
-				viewDesc.DecodeProfile = desiredDecoderProfile;
-				viewDesc.ViewDimension = D3D11_VDOV_DIMENSION_TEXTURE2D;
-
-				for (UINT i = 0; i < numSurfaces; ++i)
-				{
-					viewDesc.Texture2D.ArraySlice = i;
-					ThrowIfFailed(pD3DVideoDevice->CreateVideoDecoderOutputView(pOutputTexture.Get(), &viewDesc, &outputViews[i]));
-
-					ComPtr<IMFMediaBuffer> pBuffer;
-					ThrowIfFailed(MFCreateDXGISurfaceBuffer(__uuidof(ID3D11Texture2D), pOutputTexture.Get(), i, FALSE, &pBuffer));
-
-					ComPtr<IMFSample> pSample;
-					ThrowIfFailed(MFCreateSample(&pSample));
-
-					ThrowIfFailed(pSample->AddBuffer(pBuffer.Get()));
-
-					outputSamples[i] = pSample;
-				}
-				/******************************************************************/
-
-				/******************************************************************
-				 * Decoding
-				 *
-				 * https://learn.microsoft.com/en-us/windows/win32/medfound/supporting-direct3d-11-video-decoding-in-media-foundation#decoding
-				 ******************************************************************/
-				ComPtr<ID3D11VideoDecoder> pVideoDecoder;
-				ThrowIfFailed(pD3DVideoDevice->CreateVideoDecoder(&videoDecoderDesc, &videoDecoderConfigList[0], &pVideoDecoder));
-
-				throw std::exception("TODO: finish decoding. Falling back to software decoding...");
-
-				print_stats(pDecoderTransform.Get());
-
-				/******************************************************************/
+				create_dx_video_decoder();
+				print_stats();
+				sourceReaderThread = std::thread(decode_loop_gpu);
 			}
 			catch (const std::exception&)
 			{
-				/******************************************************************
-				 * Fallback to Software Decoding
-				 *
-				 * https://learn.microsoft.com/en-us/windows/win32/medfound/supporting-direct3d-11-video-decoding-in-media-foundation#fallback-to-software-decoding
-				 ******************************************************************/
-
-				ThrowIfFailed(pDecoderTransform->ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, NULL));
-
-				// Create output media type for decoder and copy all items from file video media type
-				ComPtr<IMFMediaType> pOutputMediaType;
-				ThrowIfFailed(MFCreateMediaType(&pOutputMediaType));
-				ThrowIfFailed(pFileVideoMediaType->CopyAllItems(pOutputMediaType.Get()));
-				ThrowIfFailed(pOutputMediaType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12));
-
-				// Set output type for decoder
-				ThrowIfFailed(pDecoderTransform->SetOutputType(0, pOutputMediaType.Get(), 0));
-				/******************************************************************/
-
-				print_stats(pDecoderTransform.Get());
-
-				sourceReaderThread = std::thread(main_loop_cpu, pSourceReader.Get(), pDecoderTransform.Get(), pOutputTexture.Get(), nv12_tex);
+				create_fallback_video_decoder();
+				print_stats();
+				sourceReaderThread = std::thread(decode_loop_cpu);
 			}
 		}
 		catch (const std::exception& e)
@@ -365,7 +188,226 @@ namespace nakamir {
 		}
 	}
 
-	void print_stats(IMFTransform* pDecoderTransform)
+	void create_fallback_video_decoder()
+	{
+		try
+		{
+			/******************************************************************
+			 * Fallback to Software Decoding
+			 *
+			 * https://learn.microsoft.com/en-us/windows/win32/medfound/supporting-direct3d-11-video-decoding-in-media-foundation#fallback-to-software-decoding
+			 ******************************************************************/
+			ThrowIfFailed(pDecoderTransform->ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, NULL));
+
+			// Create output media type for decoder and copy all items from file video media type
+			ComPtr<IMFMediaType> pOutputMediaType;
+			ThrowIfFailed(MFCreateMediaType(&pOutputMediaType));
+			ThrowIfFailed(pFileVideoMediaType->CopyAllItems(pOutputMediaType.Get()));
+			ThrowIfFailed(pOutputMediaType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12));
+
+			// Set output type for decoder
+			ThrowIfFailed(pDecoderTransform->SetOutputType(0, pOutputMediaType.Get(), 0));
+			/******************************************************************/
+		}
+		catch (const std::exception& e)
+		{
+			log_err(e.what());
+			throw e;
+		}
+	}
+
+	void create_dx_video_decoder()
+	{
+		try
+		{
+			/******************************************************************
+			 * Open a Device Handle (continued)
+			 *
+			 * https://learn.microsoft.com/en-us/windows/win32/medfound/supporting-direct3d-11-video-decoding-in-media-foundation#open-a-device-handle
+			 ******************************************************************/
+			// Call IMFDXGIDeviceManager::OpenDeviceHandle to get a handle to the Direct3D 11 device
+			ThrowIfFailed(pDXGIDeviceManager->OpenDeviceHandle(&deviceHandle));
+
+			// Call IMFDXGIDeviceManager::GetVideoService to get a pointer to the D3D11Device
+			ID3D11Device* pD3DDevice = (ID3D11Device*)backend_d3d11_get_d3d_device();
+			ThrowIfFailed(pDXGIDeviceManager->GetVideoService(deviceHandle, IID_PPV_ARGS(&pD3DDevice)));
+
+			// Call IMFDXGIDeviceManager::GetVideoService to get a pointer to the video accelerator
+			ComPtr<ID3D11VideoDevice> pD3DVideoDevice;
+			ThrowIfFailed(pDXGIDeviceManager->GetVideoService(deviceHandle, IID_PPV_ARGS(&pD3DVideoDevice)));
+
+			// Call ID3D11Device::GetImmediateContext to get an ID3D11DeviceContext pointer
+			ComPtr<ID3D11DeviceContext> pDeviceContext;
+			pD3DDevice->GetImmediateContext(&pDeviceContext);
+
+			// Call QueryInterface on the ID3D11DeviceContext to get an ID3D11VideoContext pointer
+			ThrowIfFailed(pDeviceContext->QueryInterface(__uuidof(ID3D11VideoContext), (void**)&pVideoContext));
+
+			// It is recommended that you use multi-thread protection on the device context to prevent deadlock issues 
+			// that can sometimes happen when you call ID3D11VideoContext::GetDecoderBuffer or ID3D11VideoContext::ReleaseDecoderBuffer
+			ComPtr<ID3D10Multithread> pMultiThread;
+			ThrowIfFailed(pD3DDevice->QueryInterface(__uuidof(ID3D10Multithread), (void**)&pMultiThread));
+			pMultiThread->SetMultithreadProtected(TRUE);
+			/******************************************************************/
+
+			/******************************************************************
+			 * Find a Decoder Configuration
+			 *
+			 * https://learn.microsoft.com/en-us/windows/win32/medfound/supporting-direct3d-11-video-decoding-in-media-foundation#find-a-decoder-configuration
+			 ******************************************************************/
+			 // Create input media type for decoder and copy all items from file video media type
+			ComPtr<IMFMediaType> pInputMediaType;
+			ThrowIfFailed(MFCreateMediaType(&pInputMediaType));
+			ThrowIfFailed(pFileVideoMediaType->CopyAllItems(pInputMediaType.Get()));
+			ThrowIfFailed(pDecoderTransform->SetInputType(0, pInputMediaType.Get(), 0));
+
+			UINT numSupportedProfiles = pD3DVideoDevice->GetVideoDecoderProfileCount();
+			GUID desiredDecoderProfile = D3D11_DECODER_PROFILE_H264_VLD_NOFGT;
+			BOOL isDecoderProfileSupported = FALSE;
+			for (UINT i = 0; i < numSupportedProfiles; ++i)
+			{
+				GUID decoderProfile;
+				ThrowIfFailed(pD3DVideoDevice->GetVideoDecoderProfile(i, &decoderProfile));
+
+				if (decoderProfile == desiredDecoderProfile)
+				{
+					isDecoderProfileSupported = true;
+					break;
+				}
+			}
+
+			if (!isDecoderProfileSupported)
+			{
+				throw std::exception("No video decoder profiles were found.");
+			}
+
+			ThrowIfFailed(pD3DVideoDevice->CheckVideoDecoderFormat(&desiredDecoderProfile, DXGI_FORMAT_NV12, &isDecoderProfileSupported));
+			if (!isDecoderProfileSupported)
+			{
+				throw std::exception("NV12 format is not supported.");
+			}
+
+			D3D11_VIDEO_DECODER_DESC videoDecoderDesc = {};
+			videoDecoderDesc.Guid = desiredDecoderProfile;
+			videoDecoderDesc.OutputFormat = DXGI_FORMAT_NV12;
+			videoDecoderDesc.SampleWidth = _nv12_tex->width;
+			videoDecoderDesc.SampleHeight = _nv12_tex->height;
+			UINT numSupportedConfigs = 0;
+			ThrowIfFailed(pD3DVideoDevice->GetVideoDecoderConfigCount(&videoDecoderDesc, &numSupportedConfigs));
+			if (numSupportedConfigs == 0)
+			{
+				throw std::exception("No video decoder configurations were found.");
+			}
+
+			std::vector<D3D11_VIDEO_DECODER_CONFIG> videoDecoderConfigList;
+			for (UINT i = 0; i < numSupportedConfigs; ++i)
+			{
+				D3D11_VIDEO_DECODER_CONFIG videoDecoderConfig;
+				if (SUCCEEDED(pD3DVideoDevice->GetVideoDecoderConfig(&videoDecoderDesc, i, &videoDecoderConfig)))
+				{
+					videoDecoderConfigList.push_back(videoDecoderConfig);
+				}
+			}
+
+			ComPtr<IMFMediaType> pOutputMediaType;
+			BOOL isOutputTypeConfigured = FALSE;
+			for (int i = 0; SUCCEEDED(pDecoderTransform->GetOutputAvailableType(0, i, &pOutputMediaType)); ++i)
+			{
+				GUID outSubtype = {};
+				ThrowIfFailed(pOutputMediaType->GetGUID(MF_MT_SUBTYPE, &outSubtype));
+
+				if (outSubtype == MFVideoFormat_NV12)
+				{
+					ThrowIfFailed(pDecoderTransform->SetOutputType(0, pOutputMediaType.Get(), 0));
+					isOutputTypeConfigured = TRUE;
+					break;
+				}
+			}
+
+			if (!isOutputTypeConfigured)
+			{
+				throw std::exception("Failed to set output type.");
+			}
+			/******************************************************************/
+
+			/******************************************************************
+			 * Allocating Uncompressed Buffers
+			 *
+			 * https://learn.microsoft.com/en-us/windows/win32/medfound/supporting-direct3d-11-video-decoding-in-media-foundation#find-a-decoder-configuration
+			 ******************************************************************/
+			ComPtr<IMFAttributes> pOutputStreamAttributes;
+			ThrowIfFailed(pDecoderTransform->GetOutputStreamAttributes(0, &pOutputStreamAttributes));
+
+			UINT32 minSampleCount = 3;
+			ThrowIfFailed(pOutputStreamAttributes->SetUINT32(MF_SA_MINIMUM_OUTPUT_SAMPLE_COUNT, minSampleCount));
+
+			UINT numSurfaces = 0;
+			// More reference frames will require slightly more CPU power for playback (TODO: confirm this claim)
+			// It's recommended to have at least 3. The default is limited to 1 and max is 16.
+			numSurfaces += 3; // Surfaces for reference frames
+			numSurfaces += 3; // Surfaces for deinterlacing (three surfaces)
+			numSurfaces += 0; // Surfaces that the decoder needs for buffering
+
+			UINT bindFlags = D3D11_BIND_DECODER;
+			UINT32 outputStreamBindFlags;
+			if (SUCCEEDED(pOutputStreamAttributes->GetUINT32(MF_SA_D3D11_BINDFLAGS, &outputStreamBindFlags)))
+			{
+				bindFlags |= outputStreamBindFlags;
+			}
+
+			// Create a D3D11 texture as the output buffer
+			D3D11_TEXTURE2D_DESC textureDesc = {};
+			textureDesc.Width = _nv12_tex->width;
+			textureDesc.Height = _nv12_tex->height;
+			textureDesc.MipLevels = 1;
+			textureDesc.ArraySize = numSurfaces;
+			textureDesc.Format = DXGI_FORMAT_NV12;
+			textureDesc.SampleDesc.Count = 1;
+			textureDesc.Usage = D3D11_USAGE_DEFAULT;
+			textureDesc.BindFlags = D3D11_BIND_DECODER | bindFlags;
+			textureDesc.CPUAccessFlags = 0;
+
+			ThrowIfFailed(pD3DDevice->CreateTexture2D(&textureDesc, nullptr, &pOutputTexture));
+
+			outputSamples = std::vector<ComPtr<IMFSample>>(numSurfaces);
+			outputViews = std::vector<ComPtr<ID3D11VideoDecoderOutputView>>(numSurfaces);
+
+			D3D11_VIDEO_DECODER_OUTPUT_VIEW_DESC viewDesc = {};
+			viewDesc.DecodeProfile = desiredDecoderProfile;
+			viewDesc.ViewDimension = D3D11_VDOV_DIMENSION_TEXTURE2D;
+
+			for (UINT i = 0; i < numSurfaces; ++i)
+			{
+				viewDesc.Texture2D.ArraySlice = i;
+				ThrowIfFailed(pD3DVideoDevice->CreateVideoDecoderOutputView(pOutputTexture.Get(), &viewDesc, &outputViews[i]));
+
+				ComPtr<IMFMediaBuffer> pBuffer;
+				ThrowIfFailed(MFCreateDXGISurfaceBuffer(__uuidof(ID3D11Texture2D), pOutputTexture.Get(), i, FALSE, &pBuffer));
+
+				ComPtr<IMFSample> pSample;
+				ThrowIfFailed(MFCreateSample(&pSample));
+
+				ThrowIfFailed(pSample->AddBuffer(pBuffer.Get()));
+
+				outputSamples[i] = pSample;
+			}
+			/******************************************************************/
+
+			/******************************************************************
+			 * Decoding
+			 *
+			 * https://learn.microsoft.com/en-us/windows/win32/medfound/supporting-direct3d-11-video-decoding-in-media-foundation#decoding
+			 ******************************************************************/
+			ThrowIfFailed(pD3DVideoDevice->CreateVideoDecoder(&videoDecoderDesc, &videoDecoderConfigList[0], &pVideoDecoder));
+		}
+		catch (const std::exception& e)
+		{
+			log_err(e.what());
+			throw e;
+		}
+	}
+
+	void print_stats()
 	{
 		// Gets the minimum buffer sizes for input and output samples. The MFT will not
 		// allocate buffer for input nor output, so we have to do it ourselves and make
@@ -406,15 +448,15 @@ namespace nakamir {
 
 		if (OutputStreamInfo.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES)
 		{
-			printf("\t=== Output stream provides samples ===\n\n");
+			printf("\t+---- Output stream provides samples ----+\n\n");
 		}
 		else
 		{
-			printf("\t=== The decoder will allocate its own samples ===\n\n");
+			printf("\t+---- The decoder should allocate its own samples ----+\n\n");
 		}
 	}
 
-	void main_loop_cpu(IMFSourceReader* pSourceReader, IMFTransform* pDecoderTransform, ID3D11Texture2D* pOutputTexture, nv12_tex_t nv12_tex)
+	void decode_loop_cpu()
 	{
 		// Send messages to decoder to flush data and start streaming
 		ThrowIfFailed(pDecoderTransform->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, NULL));
@@ -423,7 +465,6 @@ namespace nakamir {
 
 		// Start processing frames
 		LONGLONG llVideoTimeStamp = 0, llSampleDuration = 0;
-		int sampleCount = 0;
 		DWORD sampleFlags = 0;
 
 		while (true)
@@ -459,26 +500,25 @@ namespace nakamir {
 
 					// Gets total length of ALL media buffer samples. We can use here because it's only a
 					// single buffer sample copy
-					DWORD srcBufLength;
-					ThrowIfFailed(pVideoSample->GetTotalLength(&srcBufLength));
+					DWORD srcBufferLength;
+					ThrowIfFailed(pVideoSample->GetTotalLength(&srcBufferLength));
 
-					// The video processor MFT requires output samples to be allocated by the caller
-					ComPtr<IMFSample> pOutputSample;
-					ThrowIfFailed(MFCreateSample(&pOutputSample));
+					// The video processor MFT requires input samples to be allocated by the caller
+					ComPtr<IMFSample> pInputSample;
+					ThrowIfFailed(MFCreateSample(&pInputSample));
 
 					// Adds a ref count to the pDstBuffer object.
-					ComPtr<IMFMediaBuffer> pOutputBuffer;
-					ThrowIfFailed(MFCreateMemoryBuffer(srcBufLength, &pOutputBuffer));
-					//ThrowIfFailed(MFCreateDXGISurfaceBuffer(__uuidof(ID3D11Texture2D), pOutputTexture, 0, FALSE, &pOutputBuffer));
+					ComPtr<IMFMediaBuffer> pInputBuffer;
+					ThrowIfFailed(MFCreateMemoryBuffer(srcBufferLength, &pInputBuffer));
 
 					// Adds another ref count to the pDstBuffer object.
-					ThrowIfFailed(pOutputSample->AddBuffer(pOutputBuffer.Get()));
+					ThrowIfFailed(pInputSample->AddBuffer(pInputBuffer.Get()));
 
-					ThrowIfFailed(pVideoSample->CopyAllItems(pOutputSample.Get()));
-					ThrowIfFailed(pVideoSample->CopyToBuffer(pOutputBuffer.Get()));
+					ThrowIfFailed(pVideoSample->CopyAllItems(pInputSample.Get()));
+					ThrowIfFailed(pVideoSample->CopyToBuffer(pInputBuffer.Get()));
 
 					// Apply the H264 decoder transform
-					ThrowIfFailed(pDecoderTransform->ProcessInput(0, pOutputSample.Get(), 0));
+					ThrowIfFailed(pDecoderTransform->ProcessInput(0, pInputSample.Get(), 0));
 
 					MFT_OUTPUT_STREAM_INFO StreamInfo = {};
 					ThrowIfFailed(pDecoderTransform->GetOutputStreamInfo(0, &StreamInfo));
@@ -516,7 +556,7 @@ namespace nakamir {
 
 						printf("Process output result %.2X, MFT status %.2X.\n", mftProcessOutput, mftProccessStatus);
 
-						if (mftProcessOutput == S_OK && pH264DecodeOutSample != NULL)
+						if (mftProcessOutput == S_OK)
 						{
 							// Write the decoded sample to the nv12 texture
 							ComPtr<IMFMediaBuffer> buffer;
@@ -525,13 +565,13 @@ namespace nakamir {
 							DWORD bufferLength;
 							ThrowIfFailed(buffer->GetCurrentLength(&bufferLength));
 
-							printf("Sample size %i.\n", bufferLength);
+							//printf("Sample size %i.\n", bufferLength);
 
 							byte* byteBuffer = NULL;
 							DWORD maxLength = 0, currentLength = 0;
 							ThrowIfFailed(buffer->Lock(&byteBuffer, &maxLength, &currentLength));
 
-							nv12_tex_set_buffer(nv12_tex, byteBuffer);
+							nv12_tex_set_buffer(_nv12_tex, byteBuffer);
 
 							ThrowIfFailed(buffer->Unlock());
 						}
@@ -555,17 +595,102 @@ namespace nakamir {
 		shutdown();
 	}
 
+	void decode_loop_gpu()
+	{
+		// Send messages to decoder to flush data and start streaming
+		ThrowIfFailed(pDecoderTransform->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, NULL));
+		ThrowIfFailed(pDecoderTransform->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, NULL));
+		ThrowIfFailed(pDecoderTransform->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, NULL));
+
+		// Start processing frames
+		LONGLONG llVideoTimeStamp = 0, llSampleDuration = 0;
+		DWORD sampleFlags = 0;
+
+		while (true)
+		{
+			ComPtr<IMFSample> pVideoSample;
+			DWORD streamIndex, flags;
+			ThrowIfFailed(pSourceReader->ReadSample(
+				MF_SOURCE_READER_FIRST_VIDEO_STREAM,
+				0,                              // Flags.
+				&streamIndex,                   // Receives the actual stream index. 
+				&flags,                         // Receives status flags.
+				&llVideoTimeStamp,              // Receives the time stamp.
+				&pVideoSample                   // Receives the sample or NULL.
+			));
+
+			if (flags & MF_SOURCE_READERF_STREAMTICK)
+			{
+				printf("\tStream tick.\n");
+			}
+			if (flags & MF_SOURCE_READERF_ENDOFSTREAM)
+			{
+				printf("\tEnd of stream.\n");
+				break;
+			}
+
+			if (pVideoSample)
+			{
+				try
+				{
+					/******************************************************************
+					 * Decoding (continued)
+					 *
+					 * https://learn.microsoft.com/en-us/windows/win32/medfound/supporting-direct3d-11-video-decoding-in-media-foundation#decoding
+					 ******************************************************************/
+					 // On each frame, call IMFDXGIDeviceManager::TestDevice to test the availability of the DXGI
+					if (FAILED(pDXGIDeviceManager->TestDevice(deviceHandle)))
+					{
+						// If the device has changed, the software decoder must recreate the decoder device
+						ThrowIfFailed(pDXGIDeviceManager->CloseDeviceHandle(deviceHandle));
+						
+						// Release all resources associated with the previous Direct3D 11 device
+						release_dx_resources();
+						
+						// Open a new device handle, negotiate a new decoder configuration, and create a new decoder device
+						create_dx_video_decoder();
+					}
+
+					ThrowIfFailed(pVideoSample->SetSampleTime(llVideoTimeStamp));
+					ThrowIfFailed(pVideoSample->GetSampleDuration(&llSampleDuration));
+					ThrowIfFailed(pVideoSample->GetSampleFlags(&sampleFlags));
+
+				}
+				catch (const std::exception& e)
+				{
+					log_err(e.what());
+					throw e;
+				}
+			}
+		}
+
+		shutdown();
+	}
+
 	void shutdown()
 	{
 		MFShutdown();
 
 		pSourceReader.Reset();
+		pFileVideoMediaType.Reset();
 		pDecoderTransform.Reset();
-		pOutputTexture.Reset();
+		pDXGIDeviceManager.Reset();
+
+		// GPU-specific fields
+		release_dx_resources();
 
 		if (ppActivate && *ppActivate)
 		{
 			CoTaskMemFree(ppActivate);
 		}
+	}
+
+	void release_dx_resources()
+	{
+		pVideoContext.Reset();
+		pVideoDecoder.Reset();
+		pOutputTexture.Reset();
+		outputSamples.clear();
+		outputViews.clear();
 	}
 } // namespace nakamir
