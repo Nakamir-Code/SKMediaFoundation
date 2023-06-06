@@ -1,6 +1,6 @@
 # To use this template, 
 cmake_minimum_required(VERSION 3.11)
-project(SKVideoDecoder VERSION "0.1.0" LANGUAGES CXX C)
+project(SKMediaFoundation VERSION "0.1.0" LANGUAGES CXX C)
 
 # Grab and build StereoKit from the GitHub repository. Here we're setting SK up
 # as a statically linked library.
@@ -30,13 +30,13 @@ set(NAK_SRC_CODE
 )
 
 # Add source files to our target executable
-add_executable( SKVideoDecoder
+add_executable( SKMediaFoundation
   src/main.cpp
   ${NAK_SRC_CODE}
 )
 
 # Link to dependencies
-target_link_libraries( SKVideoDecoder
+target_link_libraries( SKMediaFoundation
   PRIVATE StereoKitC
 )
 
@@ -48,17 +48,17 @@ ENDIF(MSVC)
 # copy assets to output directory
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
   add_custom_command(
-	  sTARGET SKVideoDecoder PRE_LINK
+	  sTARGET SKMediaFoundation PRE_LINK
 	  COMMAND ${CMAKE_COMMAND} -E copy_directory
 			  ${CMAKE_SOURCE_DIR}/Assets
 			  ${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/Assets)
 endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
   add_custom_command(
-	TARGET SKVideoDecoder PRE_LINK
+	TARGET SKMediaFoundation PRE_LINK
 	COMMAND ${CMAKE_COMMAND} -E copy_directory
 			${CMAKE_SOURCE_DIR}/Assets
 			${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/Appx/Assets)
 endif()
 
-set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT SKVideoDecoder)
+set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT SKMediaFoundation)
