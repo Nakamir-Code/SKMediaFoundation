@@ -133,33 +133,38 @@ namespace nakamir {
 			// Tell the decoder to allocate resources for the maximum resolution in
 			// order to minimize glitching on resolution changes.
 			ThrowIfFailed(pAttributes->SetUINT32(MF_MT_DECODER_USE_MAX_RESOLUTION, 1));
+
+			// This attribute does not affect hardware-accelerated video decoding that uses DirectX Video Acceleration (DXVA)
 			ThrowIfFailed(pAttributes->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE));
+
+			// The decoder MFT must expose the MF_SA_D3D_AWARE attribute to TRUE
+			UINT32 isD3DAware = false;
+			ThrowIfFailed(pAttributes->GetUINT32(MF_SA_D3D_AWARE, &isD3DAware));
+			if (isD3DAware)
+			{
+				ThrowIfFailed(pAttributes->SetUINT32(CODECAPI_AVDecVideoAcceleration_H264, TRUE));
+			}
+			else
+			{
+				log_warn("Video decoder is not D3D aware, decoding may be slow.");
+			}
+
+			// Create input media type for decoder and copy all items from file video media type
+			ComPtr<IMFMediaType> pInputMediaType;
+			ThrowIfFailed(MFCreateMediaType(&pInputMediaType));
+			ThrowIfFailed(pFileVideoMediaType->CopyAllItems(pInputMediaType.Get()));
+			ThrowIfFailed(pDecoderTransform->SetInputType(0, pInputMediaType.Get(), 0));
 
 			try
 			{
-				//throw std::exception("TODO: finish decoding. Falling back to software decoding...");
+				throw std::exception("TODO: finish decoding. Falling back to software decoding...");
 
 				/******************************************************************
 				 * Open a Device Handle
 				 *
 				 * https://learn.microsoft.com/en-us/windows/win32/medfound/supporting-direct3d-11-video-decoding-in-media-foundation#open-a-device-handle
 				 ******************************************************************/
-				ComPtr<IMFAttributes> pAttributes;
-				ThrowIfFailed(pDecoderTransform->GetAttributes(&pAttributes));
-
-				// The decoder MFT must expose the MF_SA_D3D_AWARE attribute to TRUE
-				UINT32 isD3DAware = false;
-				ThrowIfFailed(pAttributes->GetUINT32(MF_SA_D3D_AWARE, &isD3DAware));
-				if (isD3DAware)
-				{
-					ThrowIfFailed(pAttributes->SetUINT32(CODECAPI_AVDecVideoAcceleration_H264, TRUE));
-				}
-				else
-				{
-					log_warn("Video decoder is not D3D aware, decoding may be slow.");
-				}
-
-				// Create the DXGI Device Manager
+				 // Create the DXGI Device Manager
 				UINT resetToken;
 				ThrowIfFailed(MFCreateDXGIDeviceManager(&resetToken, &pDXGIDeviceManager));
 
@@ -225,7 +230,7 @@ namespace nakamir {
 			 *
 			 * https://learn.microsoft.com/en-us/windows/win32/medfound/supporting-direct3d-11-video-decoding-in-media-foundation#open-a-device-handle
 			 ******************************************************************/
-			// Call IMFDXGIDeviceManager::OpenDeviceHandle to get a handle to the Direct3D 11 device
+			 // Call IMFDXGIDeviceManager::OpenDeviceHandle to get a handle to the Direct3D 11 device
 			ThrowIfFailed(pDXGIDeviceManager->OpenDeviceHandle(&deviceHandle));
 
 			// Call IMFDXGIDeviceManager::GetVideoService to get a pointer to the D3D11Device
@@ -255,12 +260,6 @@ namespace nakamir {
 			 *
 			 * https://learn.microsoft.com/en-us/windows/win32/medfound/supporting-direct3d-11-video-decoding-in-media-foundation#find-a-decoder-configuration
 			 ******************************************************************/
-			 // Create input media type for decoder and copy all items from file video media type
-			ComPtr<IMFMediaType> pInputMediaType;
-			ThrowIfFailed(MFCreateMediaType(&pInputMediaType));
-			ThrowIfFailed(pFileVideoMediaType->CopyAllItems(pInputMediaType.Get()));
-			ThrowIfFailed(pDecoderTransform->SetInputType(0, pInputMediaType.Get(), 0));
-
 			UINT numSupportedProfiles = pD3DVideoDevice->GetVideoDecoderProfileCount();
 			GUID desiredDecoderProfile = D3D11_DECODER_PROFILE_H264_VLD_NOFGT;
 			BOOL isDecoderProfileSupported = FALSE;
@@ -643,10 +642,10 @@ namespace nakamir {
 					{
 						// If the device has changed, the software decoder must recreate the decoder device
 						ThrowIfFailed(pDXGIDeviceManager->CloseDeviceHandle(deviceHandle));
-						
+
 						// Release all resources associated with the previous Direct3D 11 device
 						release_dx_resources();
-						
+
 						// Open a new device handle, negotiate a new decoder configuration, and create a new decoder device
 						create_dx_video_decoder();
 					}
@@ -654,6 +653,39 @@ namespace nakamir {
 					ThrowIfFailed(pVideoSample->SetSampleTime(llVideoTimeStamp));
 					ThrowIfFailed(pVideoSample->GetSampleDuration(&llSampleDuration));
 					ThrowIfFailed(pVideoSample->GetSampleFlags(&sampleFlags));
+
+					// Get an available surface that is not currently in use. Initially, all of the surfaces are available
+					ComPtr<IMFSample> availableSample = outputSamples[0]; // TODO: check availability
+
+					// Query the media sample for the IMFTrackedSample interface
+					ComPtr<IMFTrackedSample> pTrackedSample;
+					ThrowIfFailed(availableSample->QueryInterface(IID_PPV_ARGS(&pTrackedSample)));
+
+					// Call IMFTrackedSample::SetAllocator and provide a pointer to the IMFAsyncCallback interface
+					//pTrackedSample->SetAllocator();
+
+					// Call ID3D11VideoContext::DecoderBeginFrame
+					ThrowIfFailed(pVideoContext->DecoderBeginFrame(pVideoDecoder.Get(), outputViews[0].Get(), NULL, NULL));
+
+					// Call ID3D11VideoContext::GetDecoderBuffer to get a buffer
+					UINT bufferSize;
+					BYTE* buffer = NULL;
+					ThrowIfFailed(pVideoContext->GetDecoderBuffer(pVideoDecoder.Get(), D3D11_VIDEO_DECODER_BUFFER_PICTURE_PARAMETERS, &bufferSize, reinterpret_cast<void**>(&buffer)));
+
+					// Fill the buffer
+					//UINT copySize = min(bufferSize, descDecBuffers[i].DataSize);
+					//memcpy_s(buffer, copySize, dxvaDecData_.dxvaDecBuffers[i].pBufData, copySize);
+
+					// Call ID3D11VideoContext::ReleaseDecoderBuffer
+					ThrowIfFailed(pVideoContext->ReleaseDecoderBuffer(pVideoDecoder.Get(), D3D11_VIDEO_DECODER_BUFFER_PICTURE_PARAMETERS));
+
+					// Call ID3D11VideoContext::SubmitDecoderBuffer to instruct the decoder device to perform the decoding operations on the frame
+					UINT numBuffers = 1;
+					D3D11_VIDEO_DECODER_BUFFER_DESC bufferDesc = {};// ?
+					ThrowIfFailed(pVideoContext->SubmitDecoderBuffers(pVideoDecoder.Get(), numBuffers, &bufferDesc));
+
+					// Call ID3D11VideoContext::DecoderEndFrame to signal the end of decoding for the current frame
+					ThrowIfFailed(pVideoContext->DecoderEndFrame(pVideoDecoder.Get()));
 
 				}
 				catch (const std::exception& e)
