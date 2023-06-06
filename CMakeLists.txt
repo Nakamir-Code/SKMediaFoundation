@@ -22,8 +22,11 @@ set(NAK_SRC_CODE
 	src/nv12_sprite.cpp
 	src/nv12_sprite.h
 
-  src/mf_decode_to_buffer.h
-  src/mf_decode_to_buffer.cpp
+	src/mf_encoder.h
+	src/mf_encoder.cpp
+
+	src/mf_decoder.h
+	src/mf_decoder.cpp
 )
 
 # Add source files to our target executable

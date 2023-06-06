@@ -2,7 +2,8 @@
 #include <stereokit_ui.h>
 #include "nv12_tex.h"
 #include "nv12_sprite.h"
-#include "mf_decode_to_buffer.h"
+#include "mf_decoder.h"
+#include <mfapi.h>
 
 using namespace sk;
 using namespace nakamir;
@@ -31,11 +32,11 @@ int main(void) {
 	nv12_tex = nv12_tex_create(video_width, video_height);
 	nv12_sprite = nv12_sprite_create(nv12_tex, sprite_type_atlased);
 
-	if (!mf_initialize(nv12_tex))
+	if (FAILED(MFStartup(MF_VERSION)))
 		return 1;
 
 	// 1280x720 @ 24 FPS
-	mf_read_from_url(L"http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4");
+	mf_decode_from_url(L"http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4", nv12_tex);
 
 	sk_run([]() {
 		ui_window_begin("Video", window_pose, video_aspect_ratio, ui_win_normal, ui_move_face_user);
@@ -45,5 +46,11 @@ int main(void) {
 
 	nv12_tex_release(nv12_tex);
 	nv12_sprite_release(nv12_sprite);
+
+	if (FAILED(MFShutdown())) {
+		log_err("MFShutdown call failed!");
+		return 1;
+	}
+
 	return 0;
 }

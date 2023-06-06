@@ -1,13 +1,12 @@
-#include "mf_decode_to_buffer.h"
+#include "mf_decoder.h"
 #include "error.h"
-#include <mfapi.h>
 #include <mfplay.h>
 #include <mfreadwrite.h>
 #include <mferror.h>
 #include <wrl/client.h>
 #include <codecapi.h>
-#include <vector>
 #include <d3d11.h>
+#include <vector>
 #include <thread>
 
 EXTERN_GUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, 0xc60ac5fe, 0x252a, 0x478f, 0xa0, 0xef, 0xbc, 0x8f, 0xa5, 0xf7, 0xca, 0xd3);
@@ -21,10 +20,10 @@ using Microsoft::WRL::ComPtr;
 
 namespace nakamir {
 
-	enum _DECODER_TYPE
+	enum _VIDEO_DECODER
 	{
-		D3D_DECODER_TYPE,
-		SOFTWARE_MFT_DECODER_TYPE,
+		D3D_VIDEO_DECODER,
+		SOFTWARE_MFT_VIDEO_DECODER,
 	};
 
 	// We need these fields to stay alive when out of scope
@@ -32,6 +31,8 @@ namespace nakamir {
 	ComPtr<IMFSourceReader> pSourceReader;
 	ComPtr<IMFTransform> pDecoderTransform; // This is the H264 Decoder MFT
 	IMFActivate** ppActivate = NULL;
+
+	// just for visual debugging
 	nv12_tex_t _nv12_tex;
 
 	// GPU-specific requirements
@@ -43,36 +44,21 @@ namespace nakamir {
 	std::vector<ComPtr<IMFSample>> outputSamples;
 	std::vector<ComPtr<ID3D11VideoDecoderOutputView>> outputViews;
 
-	// METHODS
-	_DECODER_TYPE mf_mp4_source_reader(IMFMediaType* pInputMediaType);
-	void create_fallback_video_decoder(IMFMediaType* pOutputMediaType);
-	void create_dx_video_decoder();
-
-	void print_mft_stream_info();
-
-	void decode_loop_cpu();
-	void decode_sample_cpu(IMFSample* pVideoSample);
-	void decode_loop_gpu();
-	void decode_sample_gpu(IMFSample* pVideoSample);
-	
-	void shutdown();
+	// PRIVATE METHODS
+	_VIDEO_DECODER create_video_decoder(IMFMediaType* pInputMediaType, IMFTransform* pDecoderTransform);
+	static void decode_source_reader_cpu(IMFSourceReader* pSourceReader, IMFTransform* pDecoderTransform);
+	static void decode_source_reader_gpu(IMFSourceReader* pSourceReader);
+	void reset_decoder();
 	void release_dx_resources();
 
-	bool32_t mf_initialize(nv12_tex_t nv12_tex)
+	// TODO: MAKE PUBLIC?
+	void mf_initialize_d3d_video_decoder(IMFMediaType* pInputMediaType);
+	void mf_decode_sample_gpu(IMFSample* pVideoSample);
+
+
+	void mf_decode_from_url(const wchar_t* filename, nv12_tex_t nv12_tex)
 	{
 		_nv12_tex = nv12_tex;
-
-		// Start up the Media Foundation platform
-		return SUCCEEDED(MFStartup(MF_VERSION));
-	}
-
-	void mf_roundtrip_from_webcam()
-	{
-
-	}
-
-	void mf_read_from_url(const wchar_t* filename)
-	{
 		try
 		{
 			// Set up the reader for the file
@@ -80,13 +66,13 @@ namespace nakamir {
 			ThrowIfFailed(MFCreateSourceResolver(&pSourceResolver));
 
 			// Create a media source object from a URL
-			MF_OBJECT_TYPE ObjectType = MF_OBJECT_INVALID;
+			MF_OBJECT_TYPE objectType = MF_OBJECT_INVALID;
 			ComPtr<IUnknown> uSource;
 			ThrowIfFailed(pSourceResolver->CreateObjectFromURL(
 				filename,					// URL of the source.
 				MF_RESOLUTION_MEDIASOURCE | MF_RESOLUTION_READ,  // Create a source object.
 				NULL,                       // Optional property store.
-				&ObjectType,				// Receives the created object type. 
+				&objectType,				// Receives the created object type. 
 				&uSource					// Receives a pointer to the media source.
 			));
 
@@ -105,16 +91,18 @@ namespace nakamir {
 			ComPtr<IMFMediaType> pFileVideoMediaType;
 			ThrowIfFailed(pSourceReader->GetCurrentMediaType((DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM, &pFileVideoMediaType));
 
-			_DECODER_TYPE decoderType = mf_mp4_source_reader(pFileVideoMediaType.Get());
-			print_mft_stream_info();
+			mf_create_mft_software_decoder(pFileVideoMediaType.Get(), &pDecoderTransform);
+
+			_VIDEO_DECODER decoderType = create_video_decoder(pFileVideoMediaType.Get(), pDecoderTransform.Get());
+			mf_print_stream_info(pDecoderTransform.Get());
 
 			switch (decoderType)
 			{
-			case D3D_DECODER_TYPE:
-				sourceReaderThread = std::thread(decode_loop_gpu);
+			case D3D_VIDEO_DECODER:
+				sourceReaderThread = std::thread(decode_source_reader_gpu, pSourceReader.Get());
 				break;
-			case SOFTWARE_MFT_DECODER_TYPE:
-				sourceReaderThread = std::thread(decode_loop_cpu);
+			case SOFTWARE_MFT_VIDEO_DECODER:
+				sourceReaderThread = std::thread(decode_source_reader_cpu, pSourceReader.Get(), pDecoderTransform.Get());
 				break;
 			default: throw std::exception("Decoder type not found!");
 			}
@@ -126,7 +114,7 @@ namespace nakamir {
 		}
 	}
 
-	_DECODER_TYPE mf_mp4_source_reader(IMFMediaType* pInputMediaType)
+	static void mf_create_mft_software_decoder(IMFMediaType* pInputMediaType, /*[out]*/ IMFTransform** pDecoderTransform)
 	{
 		try
 		{
@@ -172,8 +160,71 @@ namespace nakamir {
 			}
 
 			// Activate first decoder object and get a pointer to it
-			ThrowIfFailed(ppActivate[0]->ActivateObject(IID_PPV_ARGS(&pDecoderTransform)));
+			ThrowIfFailed(ppActivate[0]->ActivateObject(IID_PPV_ARGS(pDecoderTransform)));
+		}
+		catch (const std::exception& e)
+		{
+			log_err(e.what());
+			throw e;
+		}
+	}
 
+	_VIDEO_DECODER create_video_decoder(IMFMediaType* pInputMediaType, IMFTransform* pDecoderTransform)
+	{
+		try
+		{
+			throw std::exception("TODO: finish decoding. Falling back to software decoding...");
+
+			/******************************************************************
+			 * Open a Device Handle
+			 *
+			 * https://learn.microsoft.com/en-us/windows/win32/medfound/supporting-direct3d-11-video-decoding-in-media-foundation#open-a-device-handle
+			 ******************************************************************/
+			// Create the DXGI Device Manager
+			UINT resetToken;
+			ThrowIfFailed(MFCreateDXGIDeviceManager(&resetToken, &pDXGIDeviceManager));
+
+			// Set the Direct3D 11 device on the DXGI Device Manager
+			ID3D11Device* pD3DDevice = (ID3D11Device*)backend_d3d11_get_d3d_device();
+			ThrowIfFailed(pDXGIDeviceManager->ResetDevice(pD3DDevice, resetToken));
+
+			// The Topology Loader calls IMFTransform::ProcessMessage with the MFT_MESSAGE_SET_D3D_MANAGER message
+			ThrowIfFailed(pDecoderTransform->ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, reinterpret_cast<ULONG_PTR>(pDXGIDeviceManager.Get())));
+
+			mf_initialize_d3d_video_decoder(pInputMediaType);
+			/******************************************************************/
+			return D3D_VIDEO_DECODER;
+		}
+		catch (const std::exception&)
+		{
+			try
+			{
+				/******************************************************************
+				 * Fallback to Software Decoding
+				 *
+				 * https://learn.microsoft.com/en-us/windows/win32/medfound/supporting-direct3d-11-video-decoding-in-media-foundation#fallback-to-software-decoding
+				 ******************************************************************/
+				ComPtr<IMFMediaType> pRenderOutputMediaType;
+				ThrowIfFailed(MFCreateMediaType(&pRenderOutputMediaType));
+				ThrowIfFailed(pInputMediaType->CopyAllItems(pRenderOutputMediaType.Get()));
+				ThrowIfFailed(pRenderOutputMediaType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12));
+
+				mf_initialize_mft_software_decoder(pInputMediaType, pRenderOutputMediaType.Get(), pDecoderTransform);
+				/******************************************************************/
+				return SOFTWARE_MFT_VIDEO_DECODER;
+			}
+			catch (const std::exception& e)
+			{
+				log_err(e.what());
+				throw e;
+			}
+		}
+	}
+
+	static void mf_initialize_mft_software_decoder(IMFMediaType* pInputMediaType, IMFMediaType* pOutputMediaType, IMFTransform* pDecoderTransform)
+	{
+		try
+		{
 			ComPtr<IMFAttributes> pAttributes;
 			ThrowIfFailed(pDecoderTransform->GetAttributes(&pAttributes));
 
@@ -199,61 +250,10 @@ namespace nakamir {
 			// Create input media type for decoder and copy all items from file video media type
 			ThrowIfFailed(pDecoderTransform->SetInputType(0, pInputMediaType, 0));
 
-			try
-			{
-				throw std::exception("TODO: finish decoding. Falling back to software decoding...");
-
-				/******************************************************************
-				 * Open a Device Handle
-				 *
-				 * https://learn.microsoft.com/en-us/windows/win32/medfound/supporting-direct3d-11-video-decoding-in-media-foundation#open-a-device-handle
-				 ******************************************************************/
-				 // Create the DXGI Device Manager
-				UINT resetToken;
-				ThrowIfFailed(MFCreateDXGIDeviceManager(&resetToken, &pDXGIDeviceManager));
-
-				// Set the Direct3D 11 device on the DXGI Device Manager
-				ID3D11Device* pD3DDevice = (ID3D11Device*)backend_d3d11_get_d3d_device();
-				ThrowIfFailed(pDXGIDeviceManager->ResetDevice(pD3DDevice, resetToken));
-
-				// The Topology Loader calls IMFTransform::ProcessMessage with the MFT_MESSAGE_SET_D3D_MANAGER message
-				ThrowIfFailed(pDecoderTransform->ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, reinterpret_cast<ULONG_PTR>(pDXGIDeviceManager.Get())));
-
-				create_dx_video_decoder();
-				return D3D_DECODER_TYPE;
-			}
-			catch (const std::exception&)
-			{
-				ComPtr<IMFMediaType> pRenderOutputMediaType;
-				ThrowIfFailed(MFCreateMediaType(&pRenderOutputMediaType));
-				ThrowIfFailed(pInputMediaType->CopyAllItems(pRenderOutputMediaType.Get()));
-				ThrowIfFailed(pRenderOutputMediaType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12));
-
-				create_fallback_video_decoder(pRenderOutputMediaType.Get());
-				return SOFTWARE_MFT_DECODER_TYPE;
-			}
-		}
-		catch (const std::exception& e)
-		{
-			log_err(e.what());
-			throw e;
-		}
-	}
-
-	void create_fallback_video_decoder(IMFMediaType* pOutputMediaType)
-	{
-		try
-		{
-			/******************************************************************
-			 * Fallback to Software Decoding
-			 *
-			 * https://learn.microsoft.com/en-us/windows/win32/medfound/supporting-direct3d-11-video-decoding-in-media-foundation#fallback-to-software-decoding
-			 ******************************************************************/
 			ThrowIfFailed(pDecoderTransform->ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, NULL));
 
 			// Create output media type for decoder and copy all items from file video media type
 			ThrowIfFailed(pDecoderTransform->SetOutputType(0, pOutputMediaType, 0));
-			/******************************************************************/
 		}
 		catch (const std::exception& e)
 		{
@@ -262,7 +262,7 @@ namespace nakamir {
 		}
 	}
 
-	void create_dx_video_decoder()
+	void mf_initialize_d3d_video_decoder(IMFMediaType* pInputMediaType)
 	{
 		try
 		{
@@ -327,11 +327,15 @@ namespace nakamir {
 				throw std::exception("NV12 format is not supported.");
 			}
 
+			UINT32 width;
+			UINT32 height;
+			ThrowIfFailed(MFGetAttributeSize(pInputMediaType, MF_MT_FRAME_SIZE, &width, &height));
+
 			D3D11_VIDEO_DECODER_DESC videoDecoderDesc = {};
 			videoDecoderDesc.Guid = desiredDecoderProfile;
 			videoDecoderDesc.OutputFormat = DXGI_FORMAT_NV12;
-			videoDecoderDesc.SampleWidth = _nv12_tex->width;
-			videoDecoderDesc.SampleHeight = _nv12_tex->height;
+			videoDecoderDesc.SampleWidth = width;
+			videoDecoderDesc.SampleHeight = height;
 			UINT numSupportedConfigs = 0;
 			ThrowIfFailed(pD3DVideoDevice->GetVideoDecoderConfigCount(&videoDecoderDesc, &numSupportedConfigs));
 			if (numSupportedConfigs == 0)
@@ -397,8 +401,8 @@ namespace nakamir {
 
 			// Create a D3D11 texture as the output buffer
 			D3D11_TEXTURE2D_DESC textureDesc = {};
-			textureDesc.Width = _nv12_tex->width;
-			textureDesc.Height = _nv12_tex->height;
+			textureDesc.Width = width;
+			textureDesc.Height = height;
 			textureDesc.MipLevels = 1;
 			textureDesc.ArraySize = numSurfaces;
 			textureDesc.Format = DXGI_FORMAT_NV12;
@@ -447,7 +451,7 @@ namespace nakamir {
 		}
 	}
 
-	void print_mft_stream_info()
+	static void mf_print_stream_info(IMFTransform* pDecoderTransform)
 	{
 		// Gets the minimum buffer sizes for input and output samples. The MFT will not
 		// allocate buffer for input nor output, so we have to do it ourselves and make
@@ -496,7 +500,7 @@ namespace nakamir {
 		}
 	}
 
-	void decode_loop_cpu()
+	static void decode_source_reader_cpu(IMFSourceReader* pSourceReader, IMFTransform* pDecoderTransform)
 	{
 		// Send messages to decoder to flush data and start streaming
 		ThrowIfFailed(pDecoderTransform->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, NULL));
@@ -532,14 +536,14 @@ namespace nakamir {
 
 			if (pVideoSample)
 			{
-				decode_sample_cpu(pVideoSample.Get());
+				mf_decode_sample_cpu(pVideoSample.Get(), pDecoderTransform);
 			}
 		}
 
-		shutdown();
+		reset_decoder();
 	}
 
-	void decode_sample_cpu(IMFSample* pVideoSample)
+	static void mf_decode_sample_cpu(IMFSample* pVideoSample, IMFTransform* pDecoderTransform)
 	{
 		// Start processing the frame
 		LONGLONG llSampleTime = 0, llSampleDuration = 0;
@@ -624,7 +628,7 @@ namespace nakamir {
 					DWORD maxLength = 0, currentLength = 0;
 					ThrowIfFailed(buffer->Lock(&byteBuffer, &maxLength, &currentLength));
 
-					nv12_tex_set_buffer(_nv12_tex, byteBuffer);
+					nv12_tex_set_buffer(_nv12_tex, byteBuffer); // TODO: replace with a context since this method should be static
 
 					ThrowIfFailed(buffer->Unlock());
 				}
@@ -644,7 +648,7 @@ namespace nakamir {
 		}
 	}
 
-	void decode_loop_gpu()
+	static void decode_source_reader_gpu(IMFSourceReader* pSourceReader)
 	{
 		// Start processing frames
 		LONGLONG llVideoTimeStamp = 0, llSampleDuration = 0;
@@ -675,15 +679,15 @@ namespace nakamir {
 
 			if (pVideoSample)
 			{
-				decode_sample_gpu(pVideoSample.Get());
+				mf_decode_sample_gpu(pVideoSample.Get());
 			}
 		}
 
-		shutdown();
+		reset_decoder();
 	}
 
 	// TODO
-	void decode_sample_gpu(IMFSample* pVideoSample)
+	void mf_decode_sample_gpu(IMFSample* pVideoSample)
 	{
 		// Start processing the frame
 		LONGLONG llSampleTime = 0, llSampleDuration = 0;
@@ -706,7 +710,9 @@ namespace nakamir {
 				release_dx_resources();
 
 				// Open a new device handle, negotiate a new decoder configuration, and create a new decoder device
-				create_dx_video_decoder();
+				ComPtr<IMFMediaType> pInputType;
+				ThrowIfFailed(pDecoderTransform->GetInputCurrentType(0, &pInputType));
+				mf_initialize_d3d_video_decoder(pInputType.Get());
 			}
 
 			ThrowIfFailed(pVideoSample->GetSampleTime(&llSampleTime));
@@ -754,10 +760,8 @@ namespace nakamir {
 		}
 	}
 
-	void shutdown()
+	void reset_decoder()
 	{
-		MFShutdown();
-
 		pSourceReader.Reset();
 		pDecoderTransform.Reset();
 		pDXGIDeviceManager.Reset();
