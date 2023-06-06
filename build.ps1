@@ -21,6 +21,6 @@ if ($plat -eq 'UWP') {
 # Build
 cmake --build .. -j8
 
-Start-Process SKVideoDecoder.sln
+Start-Process SKMediaFoundation.sln
 
 Set-Location ..
