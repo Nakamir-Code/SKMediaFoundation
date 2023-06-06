@@ -21,10 +21,15 @@ using Microsoft::WRL::ComPtr;
 
 namespace nakamir {
 
+	enum _DECODER_TYPE
+	{
+		D3D_DECODER_TYPE,
+		SOFTWARE_MFT_DECODER_TYPE,
+	};
+
 	// We need these fields to stay alive when out of scope
 	std::thread sourceReaderThread;
 	ComPtr<IMFSourceReader> pSourceReader;
-	ComPtr<IMFMediaType> pFileVideoMediaType;
 	ComPtr<IMFTransform> pDecoderTransform; // This is the H264 Decoder MFT
 	IMFActivate** ppActivate = NULL;
 	nv12_tex_t _nv12_tex;
@@ -38,22 +43,38 @@ namespace nakamir {
 	std::vector<ComPtr<IMFSample>> outputSamples;
 	std::vector<ComPtr<ID3D11VideoDecoderOutputView>> outputViews;
 
-	void print_stats();
+	// METHODS
+	_DECODER_TYPE mf_mp4_source_reader(IMFMediaType* pInputMediaType);
+	void create_fallback_video_decoder(IMFMediaType* pOutputMediaType);
 	void create_dx_video_decoder();
-	void create_fallback_video_decoder();
+
+	void print_mft_stream_info();
+
 	void decode_loop_cpu();
+	void decode_sample_cpu(IMFSample* pVideoSample);
 	void decode_loop_gpu();
+	void decode_sample_gpu(IMFSample* pVideoSample);
+	
 	void shutdown();
 	void release_dx_resources();
 
-	void mf_mp4_source_reader(const wchar_t* filename, nv12_tex_t nv12_tex)
+	bool32_t mf_initialize(nv12_tex_t nv12_tex)
 	{
 		_nv12_tex = nv12_tex;
+
+		// Start up the Media Foundation platform
+		return SUCCEEDED(MFStartup(MF_VERSION));
+	}
+
+	void mf_roundtrip_from_webcam()
+	{
+
+	}
+
+	void mf_read_from_url(const wchar_t* filename)
+	{
 		try
 		{
-			// Start up the Media Foundation platform
-			ThrowIfFailed(MFStartup(MF_VERSION));
-
 			// Set up the reader for the file
 			ComPtr<IMFSourceResolver> pSourceResolver;
 			ThrowIfFailed(MFCreateSourceResolver(&pSourceResolver));
@@ -81,13 +102,39 @@ namespace nakamir {
 			ThrowIfFailed(MFCreateSourceReaderFromMediaSource(mediaFileSource.Get(), pVideoReaderAttributes.Get(), &pSourceReader));
 
 			// Get the current media type of the first video stream
+			ComPtr<IMFMediaType> pFileVideoMediaType;
 			ThrowIfFailed(pSourceReader->GetCurrentMediaType((DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM, &pFileVideoMediaType));
 
+			_DECODER_TYPE decoderType = mf_mp4_source_reader(pFileVideoMediaType.Get());
+			print_mft_stream_info();
+
+			switch (decoderType)
+			{
+			case D3D_DECODER_TYPE:
+				sourceReaderThread = std::thread(decode_loop_gpu);
+				break;
+			case SOFTWARE_MFT_DECODER_TYPE:
+				sourceReaderThread = std::thread(decode_loop_cpu);
+				break;
+			default: throw std::exception("Decoder type not found!");
+			}
+		}
+		catch (const std::exception& e)
+		{
+			log_err(e.what());
+			throw e;
+		}
+	}
+
+	_DECODER_TYPE mf_mp4_source_reader(IMFMediaType* pInputMediaType)
+	{
+		try
+		{
 			// Get the major and subtype of the mp4 video
 			GUID majorType = {};
 			GUID subType = {};
-			ThrowIfFailed(pFileVideoMediaType->GetGUID(MF_MT_MAJOR_TYPE, &majorType));
-			ThrowIfFailed(pFileVideoMediaType->GetGUID(MF_MT_SUBTYPE, &subType));
+			ThrowIfFailed(pInputMediaType->GetGUID(MF_MT_MAJOR_TYPE, &majorType));
+			ThrowIfFailed(pInputMediaType->GetGUID(MF_MT_SUBTYPE, &subType));
 
 			// Create H.264 decoder.
 			MFT_REGISTER_TYPE_INFO inputType = {};
@@ -150,10 +197,7 @@ namespace nakamir {
 			}
 
 			// Create input media type for decoder and copy all items from file video media type
-			ComPtr<IMFMediaType> pInputMediaType;
-			ThrowIfFailed(MFCreateMediaType(&pInputMediaType));
-			ThrowIfFailed(pFileVideoMediaType->CopyAllItems(pInputMediaType.Get()));
-			ThrowIfFailed(pDecoderTransform->SetInputType(0, pInputMediaType.Get(), 0));
+			ThrowIfFailed(pDecoderTransform->SetInputType(0, pInputMediaType, 0));
 
 			try
 			{
@@ -176,14 +220,17 @@ namespace nakamir {
 				ThrowIfFailed(pDecoderTransform->ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, reinterpret_cast<ULONG_PTR>(pDXGIDeviceManager.Get())));
 
 				create_dx_video_decoder();
-				print_stats();
-				sourceReaderThread = std::thread(decode_loop_gpu);
+				return D3D_DECODER_TYPE;
 			}
 			catch (const std::exception&)
 			{
-				create_fallback_video_decoder();
-				print_stats();
-				sourceReaderThread = std::thread(decode_loop_cpu);
+				ComPtr<IMFMediaType> pRenderOutputMediaType;
+				ThrowIfFailed(MFCreateMediaType(&pRenderOutputMediaType));
+				ThrowIfFailed(pInputMediaType->CopyAllItems(pRenderOutputMediaType.Get()));
+				ThrowIfFailed(pRenderOutputMediaType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12));
+
+				create_fallback_video_decoder(pRenderOutputMediaType.Get());
+				return SOFTWARE_MFT_DECODER_TYPE;
 			}
 		}
 		catch (const std::exception& e)
@@ -193,7 +240,7 @@ namespace nakamir {
 		}
 	}
 
-	void create_fallback_video_decoder()
+	void create_fallback_video_decoder(IMFMediaType* pOutputMediaType)
 	{
 		try
 		{
@@ -205,13 +252,7 @@ namespace nakamir {
 			ThrowIfFailed(pDecoderTransform->ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, NULL));
 
 			// Create output media type for decoder and copy all items from file video media type
-			ComPtr<IMFMediaType> pOutputMediaType;
-			ThrowIfFailed(MFCreateMediaType(&pOutputMediaType));
-			ThrowIfFailed(pFileVideoMediaType->CopyAllItems(pOutputMediaType.Get()));
-			ThrowIfFailed(pOutputMediaType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12));
-
-			// Set output type for decoder
-			ThrowIfFailed(pDecoderTransform->SetOutputType(0, pOutputMediaType.Get(), 0));
+			ThrowIfFailed(pDecoderTransform->SetOutputType(0, pOutputMediaType, 0));
 			/******************************************************************/
 		}
 		catch (const std::exception& e)
@@ -406,7 +447,7 @@ namespace nakamir {
 		}
 	}
 
-	void print_stats()
+	void print_mft_stream_info()
 	{
 		// Gets the minimum buffer sizes for input and output samples. The MFT will not
 		// allocate buffer for input nor output, so we have to do it ourselves and make
@@ -463,7 +504,7 @@ namespace nakamir {
 		ThrowIfFailed(pDecoderTransform->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, NULL));
 
 		// Start processing frames
-		LONGLONG llVideoTimeStamp = 0, llSampleDuration = 0;
+		LONGLONG llSampleTime = 0, llSampleDuration = 0;
 		DWORD sampleFlags = 0;
 
 		while (true)
@@ -475,7 +516,7 @@ namespace nakamir {
 				0,                              // Flags.
 				&streamIndex,                   // Receives the actual stream index. 
 				&flags,                         // Receives status flags.
-				&llVideoTimeStamp,              // Receives the time stamp.
+				&llSampleTime,					// Receives the timestamp.
 				&pVideoSample                   // Receives the sample or NULL.
 			));
 
@@ -491,116 +532,120 @@ namespace nakamir {
 
 			if (pVideoSample)
 			{
-				try
-				{
-					ThrowIfFailed(pVideoSample->SetSampleTime(llVideoTimeStamp));
-					ThrowIfFailed(pVideoSample->GetSampleDuration(&llSampleDuration));
-					ThrowIfFailed(pVideoSample->GetSampleFlags(&sampleFlags));
-
-					// Gets total length of ALL media buffer samples. We can use here because it's only a
-					// single buffer sample copy
-					DWORD srcBufferLength;
-					ThrowIfFailed(pVideoSample->GetTotalLength(&srcBufferLength));
-
-					// The video processor MFT requires input samples to be allocated by the caller
-					ComPtr<IMFSample> pInputSample;
-					ThrowIfFailed(MFCreateSample(&pInputSample));
-
-					// Adds a ref count to the pDstBuffer object.
-					ComPtr<IMFMediaBuffer> pInputBuffer;
-					ThrowIfFailed(MFCreateMemoryBuffer(srcBufferLength, &pInputBuffer));
-
-					// Adds another ref count to the pDstBuffer object.
-					ThrowIfFailed(pInputSample->AddBuffer(pInputBuffer.Get()));
-
-					ThrowIfFailed(pVideoSample->CopyAllItems(pInputSample.Get()));
-					ThrowIfFailed(pVideoSample->CopyToBuffer(pInputBuffer.Get()));
-
-					// Apply the H264 decoder transform
-					ThrowIfFailed(pDecoderTransform->ProcessInput(0, pInputSample.Get(), 0));
-
-					MFT_OUTPUT_STREAM_INFO StreamInfo = {};
-					ThrowIfFailed(pDecoderTransform->GetOutputStreamInfo(0, &StreamInfo));
-
-					MFT_OUTPUT_DATA_BUFFER outputDataBuffer = {};
-					outputDataBuffer.dwStreamID = 0;
-					outputDataBuffer.dwStatus = 0;
-					outputDataBuffer.pEvents = NULL;
-					outputDataBuffer.pSample = NULL;
-
-					DWORD mftProccessStatus = 0;
-					HRESULT mftProcessOutput = S_OK;
-
-					// If the decoder returns MF_E_NOTACCEPTING then it means that it has enough
-					// data to produce one or more output samples.
-					// Here, we generate new output by calling IMFTransform::ProcessOutput until it
-					// results in MF_E_TRANSFORM_NEED_MORE_INPUT which breaks out of the loop.
-					while (mftProcessOutput == S_OK)
-					{
-						ComPtr<IMFSample> pH264DecodeOutSample;
-
-						if ((StreamInfo.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES) == 0)
-						{
-							ThrowIfFailed(MFCreateSample(&pH264DecodeOutSample));
-
-							ComPtr<IMFMediaBuffer> pBuffer;
-							ThrowIfFailed(MFCreateMemoryBuffer(StreamInfo.cbSize, &pBuffer));
-
-							ThrowIfFailed(pH264DecodeOutSample->AddBuffer(pBuffer.Get()));
-
-							outputDataBuffer.pSample = pH264DecodeOutSample.Get();
-						}
-
-						mftProcessOutput = pDecoderTransform->ProcessOutput(0, 1, &outputDataBuffer, &mftProccessStatus);
-
-						//printf("Process output result %.2X, MFT status %.2X.\n", mftProcessOutput, mftProccessStatus);
-
-						if (mftProcessOutput == S_OK)
-						{
-							// Write the decoded sample to the nv12 texture
-							ComPtr<IMFMediaBuffer> buffer;
-							ThrowIfFailed(outputDataBuffer.pSample->GetBufferByIndex(0, &buffer));
-
-							DWORD bufferLength;
-							ThrowIfFailed(buffer->GetCurrentLength(&bufferLength));
-
-							//printf("Sample size %i.\n", bufferLength);
-
-							byte* byteBuffer = NULL;
-							DWORD maxLength = 0, currentLength = 0;
-							ThrowIfFailed(buffer->Lock(&byteBuffer, &maxLength, &currentLength));
-
-							nv12_tex_set_buffer(_nv12_tex, byteBuffer);
-
-							ThrowIfFailed(buffer->Unlock());
-						}
-
-						// More input is not an error condition but it means the allocated output sample is empty
-						if (mftProcessOutput != S_OK && mftProcessOutput != MF_E_TRANSFORM_NEED_MORE_INPUT)
-						{
-							printf("MFT ProcessOutput error result %.2X, MFT status %.2X.\n", mftProcessOutput, mftProccessStatus);
-							throw std::exception("Error getting H264 decoder transform output, error code %.2X.\n", mftProcessOutput);
-						}
-					}
-				}
-				catch (const std::exception& e)
-				{
-					log_err(e.what());
-					throw e;
-				}
+				decode_sample_cpu(pVideoSample.Get());
 			}
 		}
 
 		shutdown();
 	}
 
+	void decode_sample_cpu(IMFSample* pVideoSample)
+	{
+		// Start processing the frame
+		LONGLONG llSampleTime = 0, llSampleDuration = 0;
+		DWORD sampleFlags = 0;
+
+		try
+		{
+			ThrowIfFailed(pVideoSample->GetSampleTime(&llSampleTime));
+			ThrowIfFailed(pVideoSample->GetSampleDuration(&llSampleDuration));
+			ThrowIfFailed(pVideoSample->GetSampleFlags(&sampleFlags));
+
+			// Gets total length of ALL media buffer samples. We can use here because it's only a
+			// single buffer sample copy
+			DWORD srcBufferLength;
+			ThrowIfFailed(pVideoSample->GetTotalLength(&srcBufferLength));
+
+			// The video processor MFT requires input samples to be allocated by the caller
+			ComPtr<IMFSample> pInputSample;
+			ThrowIfFailed(MFCreateSample(&pInputSample));
+
+			// Adds a ref count to the pDstBuffer object.
+			ComPtr<IMFMediaBuffer> pInputBuffer;
+			ThrowIfFailed(MFCreateMemoryBuffer(srcBufferLength, &pInputBuffer));
+
+			// Adds another ref count to the pDstBuffer object.
+			ThrowIfFailed(pInputSample->AddBuffer(pInputBuffer.Get()));
+
+			ThrowIfFailed(pVideoSample->CopyAllItems(pInputSample.Get()));
+			ThrowIfFailed(pVideoSample->CopyToBuffer(pInputBuffer.Get()));
+
+			// Apply the H264 decoder transform
+			ThrowIfFailed(pDecoderTransform->ProcessInput(0, pInputSample.Get(), 0));
+
+			MFT_OUTPUT_STREAM_INFO StreamInfo = {};
+			ThrowIfFailed(pDecoderTransform->GetOutputStreamInfo(0, &StreamInfo));
+
+			MFT_OUTPUT_DATA_BUFFER outputDataBuffer = {};
+			outputDataBuffer.dwStreamID = 0;
+			outputDataBuffer.dwStatus = 0;
+			outputDataBuffer.pEvents = NULL;
+			outputDataBuffer.pSample = NULL;
+
+			DWORD mftProccessStatus = 0;
+			HRESULT mftProcessOutput = S_OK;
+
+			// If the decoder returns MF_E_NOTACCEPTING then it means that it has enough
+			// data to produce one or more output samples.
+			// Here, we generate new output by calling IMFTransform::ProcessOutput until it
+			// results in MF_E_TRANSFORM_NEED_MORE_INPUT which breaks out of the loop.
+			while (mftProcessOutput == S_OK)
+			{
+				ComPtr<IMFSample> pH264DecodeOutSample;
+
+				if ((StreamInfo.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES) == 0)
+				{
+					ThrowIfFailed(MFCreateSample(&pH264DecodeOutSample));
+
+					ComPtr<IMFMediaBuffer> pBuffer;
+					ThrowIfFailed(MFCreateMemoryBuffer(StreamInfo.cbSize, &pBuffer));
+
+					ThrowIfFailed(pH264DecodeOutSample->AddBuffer(pBuffer.Get()));
+
+					outputDataBuffer.pSample = pH264DecodeOutSample.Get();
+				}
+
+				mftProcessOutput = pDecoderTransform->ProcessOutput(0, 1, &outputDataBuffer, &mftProccessStatus);
+
+				//printf("Process output result %.2X, MFT status %.2X.\n", mftProcessOutput, mftProccessStatus);
+
+				if (mftProcessOutput == S_OK)
+				{
+					// Write the decoded sample to the nv12 texture
+					ComPtr<IMFMediaBuffer> buffer;
+					ThrowIfFailed(outputDataBuffer.pSample->GetBufferByIndex(0, &buffer));
+
+					DWORD bufferLength;
+					ThrowIfFailed(buffer->GetCurrentLength(&bufferLength));
+
+					//printf("Sample size %i.\n", bufferLength);
+
+					byte* byteBuffer = NULL;
+					DWORD maxLength = 0, currentLength = 0;
+					ThrowIfFailed(buffer->Lock(&byteBuffer, &maxLength, &currentLength));
+
+					nv12_tex_set_buffer(_nv12_tex, byteBuffer);
+
+					ThrowIfFailed(buffer->Unlock());
+				}
+
+				// More input is not an error condition but it means the allocated output sample is empty
+				if (mftProcessOutput != S_OK && mftProcessOutput != MF_E_TRANSFORM_NEED_MORE_INPUT)
+				{
+					printf("MFT ProcessOutput error result %.2X, MFT status %.2X.\n", mftProcessOutput, mftProccessStatus);
+					throw std::exception("Error getting H264 decoder transform output, error code %.2X.\n", mftProcessOutput);
+				}
+			}
+		}
+		catch (const std::exception& e)
+		{
+			log_err(e.what());
+			throw e;
+		}
+	}
+
 	void decode_loop_gpu()
 	{
-		// Send messages to decoder to flush data and start streaming
-		ThrowIfFailed(pDecoderTransform->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, NULL));
-		ThrowIfFailed(pDecoderTransform->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, NULL));
-		ThrowIfFailed(pDecoderTransform->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, NULL));
-
 		// Start processing frames
 		LONGLONG llVideoTimeStamp = 0, llSampleDuration = 0;
 		DWORD sampleFlags = 0;
@@ -630,73 +675,83 @@ namespace nakamir {
 
 			if (pVideoSample)
 			{
-				try
-				{
-					/******************************************************************
-					 * Decoding (continued)
-					 *
-					 * https://learn.microsoft.com/en-us/windows/win32/medfound/supporting-direct3d-11-video-decoding-in-media-foundation#decoding
-					 ******************************************************************/
-					 // On each frame, call IMFDXGIDeviceManager::TestDevice to test the availability of the DXGI
-					if (FAILED(pDXGIDeviceManager->TestDevice(deviceHandle)))
-					{
-						// If the device has changed, the software decoder must recreate the decoder device
-						ThrowIfFailed(pDXGIDeviceManager->CloseDeviceHandle(deviceHandle));
-
-						// Release all resources associated with the previous Direct3D 11 device
-						release_dx_resources();
-
-						// Open a new device handle, negotiate a new decoder configuration, and create a new decoder device
-						create_dx_video_decoder();
-					}
-
-					ThrowIfFailed(pVideoSample->SetSampleTime(llVideoTimeStamp));
-					ThrowIfFailed(pVideoSample->GetSampleDuration(&llSampleDuration));
-					ThrowIfFailed(pVideoSample->GetSampleFlags(&sampleFlags));
-
-					// Get an available surface that is not currently in use. Initially, all of the surfaces are available
-					ComPtr<IMFSample> availableSample = outputSamples[0]; // TODO: check availability
-
-					// Query the media sample for the IMFTrackedSample interface
-					ComPtr<IMFTrackedSample> pTrackedSample;
-					ThrowIfFailed(availableSample->QueryInterface(IID_PPV_ARGS(&pTrackedSample)));
-
-					// Call IMFTrackedSample::SetAllocator and provide a pointer to the IMFAsyncCallback interface
-					//pTrackedSample->SetAllocator();
-
-					// Call ID3D11VideoContext::DecoderBeginFrame
-					ThrowIfFailed(pVideoContext->DecoderBeginFrame(pVideoDecoder.Get(), outputViews[0].Get(), NULL, NULL));
-
-					// Call ID3D11VideoContext::GetDecoderBuffer to get a buffer
-					UINT bufferSize;
-					BYTE* buffer = NULL;
-					ThrowIfFailed(pVideoContext->GetDecoderBuffer(pVideoDecoder.Get(), D3D11_VIDEO_DECODER_BUFFER_PICTURE_PARAMETERS, &bufferSize, reinterpret_cast<void**>(&buffer)));
-
-					// Fill the buffer
-					//UINT copySize = min(bufferSize, descDecBuffers[i].DataSize);
-					//memcpy_s(buffer, copySize, dxvaDecData_.dxvaDecBuffers[i].pBufData, copySize);
-
-					// Call ID3D11VideoContext::ReleaseDecoderBuffer
-					ThrowIfFailed(pVideoContext->ReleaseDecoderBuffer(pVideoDecoder.Get(), D3D11_VIDEO_DECODER_BUFFER_PICTURE_PARAMETERS));
-
-					// Call ID3D11VideoContext::SubmitDecoderBuffer to instruct the decoder device to perform the decoding operations on the frame
-					UINT numBuffers = 1;
-					D3D11_VIDEO_DECODER_BUFFER_DESC bufferDesc = {};// ?
-					ThrowIfFailed(pVideoContext->SubmitDecoderBuffers(pVideoDecoder.Get(), numBuffers, &bufferDesc));
-
-					// Call ID3D11VideoContext::DecoderEndFrame to signal the end of decoding for the current frame
-					ThrowIfFailed(pVideoContext->DecoderEndFrame(pVideoDecoder.Get()));
-
-				}
-				catch (const std::exception& e)
-				{
-					log_err(e.what());
-					throw e;
-				}
+				decode_sample_gpu(pVideoSample.Get());
 			}
 		}
 
 		shutdown();
+	}
+
+	// TODO
+	void decode_sample_gpu(IMFSample* pVideoSample)
+	{
+		// Start processing the frame
+		LONGLONG llSampleTime = 0, llSampleDuration = 0;
+		DWORD sampleFlags = 0;
+
+		try
+		{
+			/******************************************************************
+			 * Decoding (continued)
+			 *
+			 * https://learn.microsoft.com/en-us/windows/win32/medfound/supporting-direct3d-11-video-decoding-in-media-foundation#decoding
+			 ******************************************************************/
+			 // On each frame, call IMFDXGIDeviceManager::TestDevice to test the availability of the DXGI
+			if (FAILED(pDXGIDeviceManager->TestDevice(deviceHandle)))
+			{
+				// If the device has changed, the software decoder must recreate the decoder device
+				ThrowIfFailed(pDXGIDeviceManager->CloseDeviceHandle(deviceHandle));
+
+				// Release all resources associated with the previous Direct3D 11 device
+				release_dx_resources();
+
+				// Open a new device handle, negotiate a new decoder configuration, and create a new decoder device
+				create_dx_video_decoder();
+			}
+
+			ThrowIfFailed(pVideoSample->GetSampleTime(&llSampleTime));
+			ThrowIfFailed(pVideoSample->GetSampleDuration(&llSampleDuration));
+			ThrowIfFailed(pVideoSample->GetSampleFlags(&sampleFlags));
+
+			// Get an available surface that is not currently in use. Initially, all of the surfaces are available
+			ComPtr<IMFSample> availableSample = outputSamples[0]; // TODO: check availability
+
+			// Query the media sample for the IMFTrackedSample interface
+			ComPtr<IMFTrackedSample> pTrackedSample;
+			ThrowIfFailed(availableSample->QueryInterface(IID_PPV_ARGS(&pTrackedSample)));
+
+			// Call IMFTrackedSample::SetAllocator and provide a pointer to the IMFAsyncCallback interface
+			//pTrackedSample->SetAllocator();
+
+			// Call ID3D11VideoContext::DecoderBeginFrame
+			ThrowIfFailed(pVideoContext->DecoderBeginFrame(pVideoDecoder.Get(), outputViews[0].Get(), NULL, NULL));
+
+			// Call ID3D11VideoContext::GetDecoderBuffer to get a buffer
+			UINT bufferSize;
+			BYTE* buffer = NULL;
+			ThrowIfFailed(pVideoContext->GetDecoderBuffer(pVideoDecoder.Get(), D3D11_VIDEO_DECODER_BUFFER_PICTURE_PARAMETERS, &bufferSize, reinterpret_cast<void**>(&buffer)));
+
+			// Fill the buffer
+			//UINT copySize = min(bufferSize, descDecBuffers[i].DataSize);
+			//memcpy_s(buffer, copySize, dxvaDecData_.dxvaDecBuffers[i].pBufData, copySize);
+
+			// Call ID3D11VideoContext::ReleaseDecoderBuffer
+			ThrowIfFailed(pVideoContext->ReleaseDecoderBuffer(pVideoDecoder.Get(), D3D11_VIDEO_DECODER_BUFFER_PICTURE_PARAMETERS));
+
+			// Call ID3D11VideoContext::SubmitDecoderBuffer to instruct the decoder device to perform the decoding operations on the frame
+			UINT numBuffers = 1;
+			D3D11_VIDEO_DECODER_BUFFER_DESC bufferDesc = {};// ?
+			ThrowIfFailed(pVideoContext->SubmitDecoderBuffers(pVideoDecoder.Get(), numBuffers, &bufferDesc));
+
+			// Call ID3D11VideoContext::DecoderEndFrame to signal the end of decoding for the current frame
+			ThrowIfFailed(pVideoContext->DecoderEndFrame(pVideoDecoder.Get()));
+
+		}
+		catch (const std::exception& e)
+		{
+			log_err(e.what());
+			throw e;
+		}
 	}
 
 	void shutdown()
@@ -704,7 +759,6 @@ namespace nakamir {
 		MFShutdown();
 
 		pSourceReader.Reset();
-		pFileVideoMediaType.Reset();
 		pDecoderTransform.Reset();
 		pDXGIDeviceManager.Reset();
 

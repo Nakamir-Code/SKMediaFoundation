@@ -31,8 +31,11 @@ int main(void) {
 	nv12_tex = nv12_tex_create(video_width, video_height);
 	nv12_sprite = nv12_sprite_create(nv12_tex, sprite_type_atlased);
 
+	if (!mf_initialize(nv12_tex))
+		return 1;
+
 	// 1280x720 @ 24 FPS
-	mf_mp4_source_reader(L"http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4", nv12_tex);
+	mf_read_from_url(L"http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4");
 
 	sk_run([]() {
 		ui_window_begin("Video", window_pose, video_aspect_ratio, ui_win_normal, ui_move_face_user);
