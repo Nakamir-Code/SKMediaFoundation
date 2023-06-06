@@ -553,7 +553,7 @@ namespace nakamir {
 
 						mftProcessOutput = pDecoderTransform->ProcessOutput(0, 1, &outputDataBuffer, &mftProccessStatus);
 
-						printf("Process output result %.2X, MFT status %.2X.\n", mftProcessOutput, mftProccessStatus);
+						//printf("Process output result %.2X, MFT status %.2X.\n", mftProcessOutput, mftProccessStatus);
 
 						if (mftProcessOutput == S_OK)
 						{
