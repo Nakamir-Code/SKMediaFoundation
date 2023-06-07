@@ -14,12 +14,11 @@ using Microsoft::WRL::ComPtr;
 namespace nakamir {
 
 	IMFActivate** ppActivate = NULL;
-	
+
 	std::thread sourceReaderThread;
 
 	ComPtr<IMFSourceReader> pSourceReader;
 	ComPtr<IMFTransform> pDecoderTransform; // This is the H264 Decoder MFT
-	ComPtr<IMFDXGIDeviceManager> pDXGIDeviceManager;
 
 	std::atomic_bool _cancellationToken;
 	nv12_tex_t _nv12_tex;
@@ -67,17 +66,15 @@ namespace nakamir {
 			ComPtr<IMFMediaType> pFileVideoMediaType;
 			ThrowIfFailed(pSourceReader->GetCurrentMediaType((DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM, &pFileVideoMediaType));
 
-			mf_create_mft_software_decoder(pFileVideoMediaType.Get(), &pDecoderTransform, &ppActivate);
-
-			_VIDEO_DECODER decoderType = create_video_decoder(pFileVideoMediaType.Get(), pDecoderTransform.Get(), &pDXGIDeviceManager);
+			_VIDEO_DECODER decoderType = mf_create_mft_software_decoder(pFileVideoMediaType.Get(), &pDecoderTransform, &ppActivate);
 			mf_print_stream_info(pDecoderTransform.Get());
 
 			switch (decoderType)
 			{
-			case D3D_VIDEO_DECODER:
-				sourceReaderThread = std::thread(decode_source_reader_gpu, pSourceReader.Get());
-				break;
 			case SOFTWARE_MFT_VIDEO_DECODER:
+				sourceReaderThread = std::thread(decode_source_reader_cpu, pSourceReader.Get(), pDecoderTransform.Get());
+				break;
+			case D3D_VIDEO_DECODER:
 				sourceReaderThread = std::thread(decode_source_reader_cpu, pSourceReader.Get(), pDecoderTransform.Get());
 				break;
 			default: throw std::exception("Decoder type not found!");
@@ -126,7 +123,9 @@ namespace nakamir {
 
 			if (pVideoSample)
 			{
-				mf_decode_sample_cpu(pVideoSample.Get(), pDecoderTransform, _nv12_tex);
+				mf_decode_sample_cpu(pVideoSample.Get(), pDecoderTransform, [](byte* byteBuffer) {
+					nv12_tex_set_buffer(_nv12_tex, byteBuffer);
+					});
 			}
 		}
 
@@ -175,7 +174,6 @@ namespace nakamir {
 	{
 		pSourceReader.Reset();
 		pDecoderTransform.Reset();
-		pDXGIDeviceManager.Reset();
 
 		if (ppActivate && *ppActivate)
 		{
