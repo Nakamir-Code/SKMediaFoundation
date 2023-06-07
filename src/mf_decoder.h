@@ -6,13 +6,21 @@
 
 namespace nakamir {
 
-	void mf_decode_from_url(const wchar_t* filename, nv12_tex_t nv12_tex);
+	enum _VIDEO_DECODER
+	{
+		D3D_VIDEO_DECODER,
+		SOFTWARE_MFT_VIDEO_DECODER,
+	};
 
-	static void mf_create_mft_software_decoder(IMFMediaType* pInputMediaType, /*[out]*/ IMFTransform** pDecoderTransform);
+	_VIDEO_DECODER create_video_decoder(IMFMediaType* pInputMediaType, IMFTransform* pDecoderTransform,  /**[out]**/ IMFDXGIDeviceManager** ppDXGIDeviceManager);
 
-	static void mf_initialize_mft_software_decoder(IMFMediaType* pInputMediaType, IMFMediaType* pOutputMediaType, IMFTransform* pDecoderTransform);
-	
-	static void mf_decode_sample_cpu(IMFSample* pVideoSample, IMFTransform* pDecoderTransform);
+	void mf_create_mft_software_decoder(IMFMediaType* pInputMediaType, /*[out]*/ IMFTransform** ppDecoderTransform, /*[out]*/ IMFActivate*** pppActivate);
 
-	static void mf_print_stream_info(IMFTransform* pDecoderTransform);
+	void mf_initialize_mft_software_decoder(IMFMediaType* pInputMediaType, IMFMediaType* pOutputMediaType, IMFTransform* pDecoderTransform);
+
+	//void mf_initialize_d3d_video_decoder(IMFMediaType* pInputMediaType, IMFTransform* pDecoderTransform, IMFDXGIDeviceManager* pDXGIDeviceManager);
+
+	void mf_decode_sample_cpu(IMFSample* pVideoSample, IMFTransform* pDecoderTransform, nv12_tex_t nv12_tex);
+
+	void mf_print_stream_info(IMFTransform* pDecoderTransform);
 } // namespace nakamir

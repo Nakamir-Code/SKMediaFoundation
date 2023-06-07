@@ -29,10 +29,17 @@ set(NAK_SRC_CODE
 	src/mf_decoder.cpp
 )
 
+set(NAK_EXAMPLES
+	src/mf_examples.h
+
+	src/examples/mf_decode_from_url.cpp
+)
+
 # Add source files to our target executable
 add_executable( SKMediaFoundation
   src/main.cpp
   ${NAK_SRC_CODE}
+  ${NAK_EXAMPLES}
 )
 
 # Link to dependencies
@@ -48,7 +55,7 @@ ENDIF(MSVC)
 # copy assets to output directory
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
   add_custom_command(
-	  sTARGET SKMediaFoundation PRE_LINK
+	  TARGET SKMediaFoundation PRE_LINK
 	  COMMAND ${CMAKE_COMMAND} -E copy_directory
 			  ${CMAKE_SOURCE_DIR}/Assets
 			  ${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/Assets)
