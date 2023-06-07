@@ -16,7 +16,8 @@ FetchContent_MakeAvailable(StereoKitC)
 
 set(NAK_SRC_CODE
 	src/error.h
-
+	src/mf_utility.h
+	
 	src/nv12_tex.cpp
 	src/nv12_tex.h
 	src/nv12_sprite.cpp

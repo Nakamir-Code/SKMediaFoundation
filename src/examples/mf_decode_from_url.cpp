@@ -6,6 +6,7 @@
 #include <mfapi.h>
 #include <mfplay.h>
 #include <mfreadwrite.h>
+#include <codecapi.h>
 #include <atomic>
 #include <thread>
 
@@ -24,9 +25,7 @@ namespace nakamir {
 	nv12_tex_t _nv12_tex;
 
 	// PRIVATE METHODS
-	static void decode_source_reader_cpu(IMFSourceReader* pSourceReader, IMFTransform* pDecoderTransform);
-	static void decode_source_reader_gpu(IMFSourceReader* pSourceReader);
-	static void reset_decoder();
+	static void mf_decode_source_reader_to_buffer(const ComPtr<IMFSourceReader>& pSourceReader, const ComPtr<IMFTransform>& pDecoderTransform);
 	static void mf_shutdown_thread();
 
 	void mf_decode_from_url(const wchar_t* filename, nv12_tex_t nv12_tex, std::function<void()>* shutdown_thread)
@@ -60,34 +59,40 @@ namespace nakamir {
 			ThrowIfFailed(MFCreateAttributes(&pVideoReaderAttributes, 0));
 
 			// Create a source reader from the media source
-			ThrowIfFailed(MFCreateSourceReaderFromMediaSource(mediaFileSource.Get(), pVideoReaderAttributes.Get(), &pSourceReader));
+			ThrowIfFailed(MFCreateSourceReaderFromMediaSource(mediaFileSource.Get(), pVideoReaderAttributes.Get(), pSourceReader.GetAddressOf()));
 
 			// Get the current media type of the first video stream
 			ComPtr<IMFMediaType> pFileVideoMediaType;
 			ThrowIfFailed(pSourceReader->GetCurrentMediaType((DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM, &pFileVideoMediaType));
 
-			_VIDEO_DECODER decoderType = mf_create_mft_software_decoder(pFileVideoMediaType.Get(), &pDecoderTransform, &ppActivate);
-			mf_print_stream_info(pDecoderTransform.Get());
+			//ComPtr<IMFMediaType> pH264OutputMediaType;
+			//mf_create_mft_software_encoder(MFVideoFormat_H264, pFileVideoMediaType, pH264OutputMediaType, pDecoderTransform.GetAddressOf(), &ppActivate);
+			//// Apply H264 settings and update the output media type
+			//ThrowIfFailed(pH264OutputMediaType->SetUINT32(MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_Base));
+			//ThrowIfFailed(pDecoderTransform->SetOutputType(0, pH264OutputMediaType.Get(), 0));
+
+			ComPtr<IMFMediaType> pOutputMediaType;
+			_VIDEO_DECODER decoderType = mf_create_mft_software_decoder(MFVideoFormat_NV12, pFileVideoMediaType, pOutputMediaType, pDecoderTransform, &ppActivate);
 
 			switch (decoderType)
 			{
 			case SOFTWARE_MFT_VIDEO_DECODER:
-				sourceReaderThread = std::thread(decode_source_reader_cpu, pSourceReader.Get(), pDecoderTransform.Get());
+				sourceReaderThread = std::thread(mf_decode_source_reader_to_buffer, pSourceReader, pDecoderTransform);
 				break;
-			case D3D_VIDEO_DECODER:
-				sourceReaderThread = std::thread(decode_source_reader_cpu, pSourceReader.Get(), pDecoderTransform.Get());
+			case D3D11_MFT_VIDEO_DECODER:
+				sourceReaderThread = std::thread(mf_decode_source_reader_to_buffer, pSourceReader, pDecoderTransform);
 				break;
 			default: throw std::exception("Decoder type not found!");
 			}
 		}
-		catch (const std::exception& e)
+		catch (const std::exception&)
 		{
-			log_err(e.what());
-			throw e;
+			log_err("Fatal! Failed to decode from url.");
+			throw;
 		}
 	}
 
-	static void decode_source_reader_cpu(IMFSourceReader* pSourceReader, IMFTransform* pDecoderTransform)
+	static void mf_decode_source_reader_to_buffer(const ComPtr<IMFSourceReader>& pSourceReader, const ComPtr<IMFTransform>& pDecoderTransform)
 	{
 		// Send messages to decoder to flush data and start streaming
 		ThrowIfFailed(pDecoderTransform->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, NULL));
@@ -123,61 +128,10 @@ namespace nakamir {
 
 			if (pVideoSample)
 			{
-				mf_decode_sample_cpu(pVideoSample.Get(), pDecoderTransform, [](byte* byteBuffer) {
+				mf_decode_sample_to_buffer(pVideoSample, pDecoderTransform, [](byte* byteBuffer) {
 					nv12_tex_set_buffer(_nv12_tex, byteBuffer);
-					});
+				});
 			}
-		}
-
-		reset_decoder();
-	}
-
-	static void decode_source_reader_gpu(IMFSourceReader* pSourceReader)
-	{
-		// Start processing frames
-		LONGLONG llVideoTimeStamp = 0, llSampleDuration = 0;
-		DWORD sampleFlags = 0;
-
-		while (!_cancellationToken)
-		{
-			ComPtr<IMFSample> pVideoSample;
-			DWORD streamIndex, flags;
-			ThrowIfFailed(pSourceReader->ReadSample(
-				MF_SOURCE_READER_FIRST_VIDEO_STREAM,
-				0,                              // Flags.
-				&streamIndex,                   // Receives the actual stream index. 
-				&flags,                         // Receives status flags.
-				&llVideoTimeStamp,              // Receives the time stamp.
-				&pVideoSample                   // Receives the sample or NULL.
-			));
-
-			if (flags & MF_SOURCE_READERF_STREAMTICK)
-			{
-				printf("\tStream tick.\n");
-			}
-			if (flags & MF_SOURCE_READERF_ENDOFSTREAM)
-			{
-				printf("\tEnd of stream.\n");
-				break;
-			}
-
-			if (pVideoSample)
-			{
-				//mf_decode_sample_gpu(pVideoSample.Get(), pDecoderTransform.Get());
-			}
-		}
-
-		reset_decoder();
-	}
-
-	static void reset_decoder()
-	{
-		pSourceReader.Reset();
-		pDecoderTransform.Reset();
-
-		if (ppActivate && *ppActivate)
-		{
-			CoTaskMemFree(ppActivate);
 		}
 	}
 
@@ -185,5 +139,13 @@ namespace nakamir {
 	{
 		_cancellationToken = true;
 		sourceReaderThread.join();
+
+		pSourceReader.Reset();
+		pDecoderTransform.Reset();
+
+		if (ppActivate && *ppActivate)
+		{
+			CoTaskMemFree(ppActivate);
+		}
 	}
 } // namespace nakamir
