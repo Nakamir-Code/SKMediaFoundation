@@ -1,6 +1,6 @@
 # From the project root directory
-$plat = 'UWP' # UWP, ''
-$arch = 'x64' #x64, ARM
+$arch = 'x64' #x64, ARM, ARM64
+#$plat = 'UWP'
 
 $buildDir = "build"
 if ($plat) {
@@ -19,7 +19,7 @@ if ($plat -eq 'UWP') {
 }
 
 # Build
-cmake --build .. -j8
+& cmake --build .. -j8
 
 Start-Process SKMediaFoundation.sln
 

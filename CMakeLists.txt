@@ -34,7 +34,7 @@ set(NAK_EXAMPLES
 	src/mf_examples.h
 
 	src/examples/mf_decode_from_url.cpp
-	src/examples/mf_roundtrip_mediacapture.cpp
+	src/examples/mf_roundtrip_webcam.cpp
 )
 
 # Add source files to our target executable
@@ -51,10 +51,10 @@ target_link_libraries( SKMediaFoundation
 
 # Prevent warning C4530
 IF(MSVC)
-	SET(CMAKE_CXX_FLAGS "/EHsc")
+	SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHsc")
 ENDIF(MSVC)
 
-# copy assets to output directory
+# Copy assets to output directory
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
   add_custom_command(
 	  TARGET SKMediaFoundation PRE_LINK
@@ -62,7 +62,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
 			  ${CMAKE_SOURCE_DIR}/Assets
 			  ${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/Assets)
 endif()
+
+# God's speed if you touch or mess with UWP/WinRT
 if(CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
+  add_compile_definitions(WINDOWS_UWP=1)
   add_custom_command(
 	TARGET SKMediaFoundation PRE_LINK
 	COMMAND ${CMAKE_COMMAND} -E copy_directory

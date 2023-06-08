@@ -197,39 +197,12 @@ namespace nakamir {
 		}
 	}
 
-	void mf_decode_sample_to_buffer(IMFSample* pVideoSample, IMFTransform* pDecoderTransform, const std::function<void(byte*)>& onReceiveImageBuffer)
+	void mf_decode_sample_to_buffer(IMFSample* pVideoSample, IMFTransform* pDecoderTransform, const std::function<void(IMFSample*)>& onReceiveImageBuffer)
 	{
-		// Start processing the frame
-		LONGLONG llSampleTime = 0, llSampleDuration = 0;
-		DWORD sampleFlags = 0;
-
 		try
 		{
-			ThrowIfFailed(pVideoSample->GetSampleTime(&llSampleTime));
-			ThrowIfFailed(pVideoSample->GetSampleDuration(&llSampleDuration));
-			ThrowIfFailed(pVideoSample->GetSampleFlags(&sampleFlags));
-
-			// Gets total length of ALL media buffer samples. We can use here because it's only a
-			// single buffer sample copy
-			DWORD srcBufferLength;
-			ThrowIfFailed(pVideoSample->GetTotalLength(&srcBufferLength));
-
-			// The video processor MFT requires input samples to be allocated by the caller
-			ComPtr<IMFSample> pInputSample;
-			ThrowIfFailed(MFCreateSample(pInputSample.GetAddressOf()));
-
-			// Adds a ref count to the pDstBuffer object.
-			ComPtr<IMFMediaBuffer> pInputBuffer;
-			ThrowIfFailed(MFCreateMemoryBuffer(srcBufferLength, pInputBuffer.GetAddressOf()));
-
-			// Adds another ref count to the pDstBuffer object.
-			ThrowIfFailed(pInputSample->AddBuffer(pInputBuffer.Get()));
-
-			ThrowIfFailed(pVideoSample->CopyAllItems(pInputSample.Get()));
-			ThrowIfFailed(pVideoSample->CopyToBuffer(pInputBuffer.Get()));
-
 			// Apply the H264 decoder transform
-			ThrowIfFailed(pDecoderTransform->ProcessInput(0, pInputSample.Get(), 0));
+			ThrowIfFailed(pDecoderTransform->ProcessInput(0, pVideoSample, 0));
 
 			MFT_OUTPUT_STREAM_INFO StreamInfo = {};
 			ThrowIfFailed(pDecoderTransform->GetOutputStreamInfo(0, &StreamInfo));
@@ -243,23 +216,23 @@ namespace nakamir {
 			DWORD mftProccessStatus = 0;
 			HRESULT mftProcessOutput = S_OK;
 
+			ComPtr<IMFSample> pDecodedOutSample;
+
 			// If the decoder returns MF_E_NOTACCEPTING then it means that it has enough
 			// data to produce one or more output samples.
 			// Here, we generate new output by calling IMFTransform::ProcessOutput until it
 			// results in MF_E_TRANSFORM_NEED_MORE_INPUT which breaks out of the loop.
 			while (mftProcessOutput == S_OK)
 			{
-				IMFSample* pDecodedOutSample;
-
 				if ((StreamInfo.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES) == 0)
 				{
-					ThrowIfFailed(MFCreateSample(&pDecodedOutSample));
+					ThrowIfFailed(MFCreateSample(pDecodedOutSample.ReleaseAndGetAddressOf()));
 
 					ComPtr<IMFMediaBuffer> pBuffer;
 					ThrowIfFailed(MFCreateMemoryBuffer(StreamInfo.cbSize, pBuffer.GetAddressOf()));
 					ThrowIfFailed(pDecodedOutSample->AddBuffer(pBuffer.Get()));
 
-					outputDataBuffer.pSample = pDecodedOutSample;
+					outputDataBuffer.pSample = pDecodedOutSample.Get();
 				}
 
 				mftProcessOutput = pDecoderTransform->ProcessOutput(0, 1, &outputDataBuffer, &mftProccessStatus);
@@ -280,23 +253,10 @@ namespace nakamir {
 
 				if (mftProcessOutput == S_OK)
 				{
-					// Write the decoded sample to the nv12 texture
-					ComPtr<IMFMediaBuffer> buffer;
-					ThrowIfFailed(outputDataBuffer.pSample->GetBufferByIndex(0, buffer.GetAddressOf()));
-
-					DWORD bufferLength;
-					ThrowIfFailed(buffer->GetCurrentLength(&bufferLength));
-
-					//printf("Sample size %i.\n", bufferLength);
-
-					byte* byteBuffer = NULL;
-					DWORD maxLength = 0, currentLength = 0;
-					ThrowIfFailed(buffer->Lock(&byteBuffer, &maxLength, &currentLength));
-					onReceiveImageBuffer(byteBuffer);
-					ThrowIfFailed(buffer->Unlock());
+					onReceiveImageBuffer(outputDataBuffer.pSample);
 
 					// Release sample as it is not processed any further.
-					if (outputDataBuffer.pSample)
+					if (outputDataBuffer.pSample && !pDecodedOutSample)
 						outputDataBuffer.pSample->Release();
 					if (outputDataBuffer.pEvents)
 						outputDataBuffer.pEvents->Release();

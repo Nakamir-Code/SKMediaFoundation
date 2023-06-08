@@ -8,7 +8,7 @@
 #include <d3d11.h>
 #include <wrl/client.h>
 // UWP requires a different header for ICodecAPI: https://learn.microsoft.com/en-us/windows/win32/api/strmif/nn-strmif-icodecapi
-#if defined(WINAPI_FAMILY) && (WINAPI_FAMILY == WINAPI_FAMILY_APP)
+#ifdef WINDOWS_UWP
 #include <icodecapi.h>
 #endif
 
@@ -163,39 +163,12 @@ namespace nakamir {
 		}
 	}
 
-	void mf_encode_sample_to_buffer(IMFSample* pVideoSample, IMFTransform* pEncoderTransform, const std::function<void(uint32_t, byte*)>& onReceiveEncodedBuffer)
+	void mf_encode_sample_to_buffer(IMFSample* pVideoSample, IMFTransform* pEncoderTransform, const std::function<void(IMFSample*)>& onReceiveEncodedBuffer)
 	{
-		// Start processing the frame
-		LONGLONG llSampleTime = 0, llSampleDuration = 0;
-		DWORD sampleFlags = 0;
-
 		try
 		{
-			ThrowIfFailed(pVideoSample->GetSampleTime(&llSampleTime));
-			ThrowIfFailed(pVideoSample->GetSampleDuration(&llSampleDuration));
-			ThrowIfFailed(pVideoSample->GetSampleFlags(&sampleFlags));
-
-			// Gets total length of ALL media buffer samples. We can use here because it's only a
-			// single buffer sample copy
-			DWORD srcBufferLength;
-			ThrowIfFailed(pVideoSample->GetTotalLength(&srcBufferLength));
-
-			// The video processor MFT requires input samples to be allocated by the caller
-			ComPtr<IMFSample> pInputSample;
-			ThrowIfFailed(MFCreateSample(pInputSample.GetAddressOf()));
-
-			// Adds a ref count to the pDstBuffer object.
-			ComPtr<IMFMediaBuffer> pInputBuffer;
-			ThrowIfFailed(MFCreateMemoryBuffer(srcBufferLength, pInputBuffer.GetAddressOf()));
-
-			// Adds another ref count to the pDstBuffer object.
-			ThrowIfFailed(pInputSample->AddBuffer(pInputBuffer.Get()));
-
-			ThrowIfFailed(pVideoSample->CopyAllItems(pInputSample.Get()));
-			ThrowIfFailed(pVideoSample->CopyToBuffer(pInputBuffer.Get()));
-
 			// Apply the H264 encoder transform
-			ThrowIfFailed(pEncoderTransform->ProcessInput(0, pInputSample.Get(), 0));
+			ThrowIfFailed(pEncoderTransform->ProcessInput(0, pVideoSample, 0));
 
 			MFT_OUTPUT_STREAM_INFO StreamInfo = {};
 			ThrowIfFailed(pEncoderTransform->GetOutputStreamInfo(0, &StreamInfo));
@@ -209,23 +182,23 @@ namespace nakamir {
 			DWORD mftProccessStatus = 0;
 			HRESULT mftProcessOutput = S_OK;
 
+			ComPtr<IMFSample> pEncodedOutSample;
+
 			// If the encoder returns MF_E_NOTACCEPTING then it means that it has enough
 			// data to produce one or more output samples.
 			// Here, we generate new output by calling IMFTransform::ProcessOutput until it
 			// results in MF_E_TRANSFORM_NEED_MORE_INPUT which breaks out of the loop.
 			while (mftProcessOutput == S_OK)
 			{
-				IMFSample* pEncodedOutSample;
-
 				if ((StreamInfo.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES) == 0)
 				{
-					ThrowIfFailed(MFCreateSample(&pEncodedOutSample));
+					ThrowIfFailed(MFCreateSample(pEncodedOutSample.ReleaseAndGetAddressOf()));
 
 					ComPtr<IMFMediaBuffer> pBuffer;
 					ThrowIfFailed(MFCreateMemoryBuffer(StreamInfo.cbSize, pBuffer.GetAddressOf()));
 					ThrowIfFailed(pEncodedOutSample->AddBuffer(pBuffer.Get()));
 
-					outputDataBuffer.pSample = pEncodedOutSample;
+					outputDataBuffer.pSample = pEncodedOutSample.Get();
 				}
 
 				mftProcessOutput = pEncoderTransform->ProcessOutput(0, 1, &outputDataBuffer, &mftProccessStatus);
@@ -246,25 +219,10 @@ namespace nakamir {
 
 				if (mftProcessOutput == S_OK)
 				{
-					// Write the encoded sample to the nv12 texture
-					ComPtr<IMFMediaBuffer> buffer;
-					ThrowIfFailed(outputDataBuffer.pSample->GetBufferByIndex(0, buffer.GetAddressOf()));
+					onReceiveEncodedBuffer(outputDataBuffer.pSample);
 
-					DWORD bufferLength;
-					ThrowIfFailed(buffer->GetCurrentLength(&bufferLength));
-
-					printf("Sample size %i.\n", bufferLength);
-
-					byte* byteBuffer = NULL;
-					DWORD maxLength = 0, currentLength = 0;
-					ThrowIfFailed(buffer->Lock(&byteBuffer, &maxLength, &currentLength));
-					onReceiveEncodedBuffer(currentLength, byteBuffer);
-					ThrowIfFailed(buffer->Unlock());
-
-					printf("Output size %i.\n", currentLength);
-
-					// Release sample as it is not processed any further.
-					if (outputDataBuffer.pSample)
+					// Release events as it is not processed any further.
+					if (outputDataBuffer.pSample && !pEncodedOutSample)
 						outputDataBuffer.pSample->Release();
 					if (outputDataBuffer.pEvents)
 						outputDataBuffer.pEvents->Release();
