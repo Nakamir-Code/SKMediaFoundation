@@ -57,19 +57,18 @@ namespace nakamir {
 		D3D11_MAPPED_SUBRESOURCE tex_mem = {};
 
 		bool on_main = backend_d3d11_get_main_thread_id() == GetCurrentThreadId();
+		ID3D11DeviceContext* pContext;
+		if (on_main) {
+			pD3D_device->GetImmediateContext(&pContext);
+		}
+		else {
+			pContext = (ID3D11DeviceContext*)backend_d3d11_get_deferred_d3d_context();
+			WaitForSingleObject(backend_d3d11_get_deferred_mtx(), INFINITE);
+		}
 
 		try
 		{
-			ID3D11DeviceContext* pContext;
-			if (on_main) {
-				pD3D_device->GetImmediateContext(&pContext);
-			} else {
-				pContext = (ID3D11DeviceContext*)backend_d3d11_get_deferred_d3d_context();
-				WaitForSingleObject(backend_d3d11_get_deferred_mtx(), INFINITE);
-			}
-
 			int luminance_size = nv12_tex->width * nv12_tex->height;
-
 			ThrowIfFailed(pContext->Map(nv12_tex->luminance_view, 0, D3D11_MAP_WRITE_DISCARD, 0, &tex_mem));
 			memcpy(tex_mem.pData, encoded_image_buffer, (size_t)luminance_size);
 			pContext->Unmap(nv12_tex->luminance_view, 0);

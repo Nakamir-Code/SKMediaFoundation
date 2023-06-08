@@ -1,6 +1,5 @@
 #include "../mf_examples.h"
 #include "../mf_decoder.h"
-#include "../mf_encoder.h"
 #include "../error.h"
 #include <wrl/client.h>
 #include <mfapi.h>
@@ -72,7 +71,7 @@ namespace nakamir {
 			//ThrowIfFailed(pDecoderTransform->SetOutputType(0, pH264OutputMediaType.Get(), 0));
 
 			ComPtr<IMFMediaType> pOutputMediaType;
-			_VIDEO_DECODER decoderType = mf_create_mft_software_decoder(MFVideoFormat_NV12, pFileVideoMediaType, pOutputMediaType, pDecoderTransform, &ppActivate);
+			_VIDEO_DECODER decoderType = mf_create_mft_software_decoder(MFVideoFormat_NV12, pFileVideoMediaType.GetAddressOf(), pOutputMediaType.GetAddressOf(), pDecoderTransform.GetAddressOf(), &ppActivate);
 
 			switch (decoderType)
 			{
@@ -128,9 +127,9 @@ namespace nakamir {
 
 			if (pVideoSample)
 			{
-				mf_decode_sample_to_buffer(pVideoSample, pDecoderTransform, [](byte* byteBuffer) {
+				mf_decode_sample_to_buffer(pVideoSample.Get(), pDecoderTransform.Get(), [](byte* byteBuffer) {
 					nv12_tex_set_buffer(_nv12_tex, byteBuffer);
-				});
+					});
 			}
 		}
 	}

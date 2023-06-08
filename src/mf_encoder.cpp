@@ -6,6 +6,7 @@
 #include <mferror.h>
 #include <codecapi.h>
 #include <d3d11.h>
+#include <wrl/client.h>
 // UWP requires a different header for ICodecAPI: https://learn.microsoft.com/en-us/windows/win32/api/strmif/nn-strmif-icodecapi
 #if defined(WINAPI_FAMILY) && (WINAPI_FAMILY == WINAPI_FAMILY_APP)
 #include <icodecapi.h>
@@ -13,23 +14,26 @@
 
 #pragma comment(lib, "mfuuid.lib")
 
+using Microsoft::WRL::ComPtr;
+
 namespace nakamir {
 
-	static void mf_validate_stream_info(const ComPtr<IMFTransform>& pEncoderTransform);
+	static void mf_validate_stream_info(/**[in]**/ IMFTransform* pEncoderTransform);
 
-	void mf_create_mft_software_encoder(const GUID& targetSubType, ComPtr<IMFMediaType>& pInputMediaType, ComPtr<IMFMediaType>& pOutputMediaType, ComPtr<IMFTransform>& pEncoderTransform, IMFActivate*** pppActivate)
+	void mf_create_mft_software_encoder(const GUID& targetSubType, IMFMediaType** ppInputMediaType, IMFMediaType** ppOutputMediaType, IMFTransform** ppEncoderTransform, IMFActivate*** pppActivate)
 	{
 		try
 		{
+			const UINT32 bitrate = 5000000;
 			UINT32 width, height, fps, den;
-			ThrowIfFailed(MFGetAttributeSize(pInputMediaType.Get(), MF_MT_FRAME_SIZE, &width, &height));
-			ThrowIfFailed(MFGetAttributeRatio(pInputMediaType.Get(), MF_MT_FRAME_RATE, &fps, &den));
+			ThrowIfFailed(MFGetAttributeSize(*ppInputMediaType, MF_MT_FRAME_SIZE, &width, &height));
+			ThrowIfFailed(MFGetAttributeRatio(*ppInputMediaType, MF_MT_FRAME_RATE, &fps, &den));
 
 			// Get the major and subtype of the mp4 video
 			GUID majorType = {};
 			GUID subType = {};
-			ThrowIfFailed(pInputMediaType->GetGUID(MF_MT_MAJOR_TYPE, &majorType));
-			ThrowIfFailed(pInputMediaType->GetGUID(MF_MT_SUBTYPE, &subType));
+			ThrowIfFailed((*ppInputMediaType)->GetGUID(MF_MT_MAJOR_TYPE, &majorType));
+			ThrowIfFailed((*ppInputMediaType)->GetGUID(MF_MT_SUBTYPE, &subType));
 
 			// Create H.264 encoder.
 			MFT_REGISTER_TYPE_INFO inputType = {};
@@ -77,24 +81,24 @@ namespace nakamir {
 			}
 
 			// Activate first encoder object and get a pointer to it
-			ThrowIfFailed((*pppActivate)[0]->ActivateObject(IID_PPV_ARGS(pEncoderTransform.GetAddressOf())));
+			ThrowIfFailed((*pppActivate)[0]->ActivateObject(IID_PPV_ARGS(ppEncoderTransform)));
 
 			ComPtr<IMFAttributes> pAttributes;
-			ThrowIfFailed(pEncoderTransform->GetAttributes(pAttributes.GetAddressOf()));
+			ThrowIfFailed((*ppEncoderTransform)->GetAttributes(pAttributes.GetAddressOf()));
 
 			// This attribute does not affect hardware-accelerated video encoding that uses DirectX Video Acceleration (DXVA)
 			ThrowIfFailed(pAttributes->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE));
 
 			// Set the hardware encoding parameters
 			ComPtr<ICodecAPI> pCodecAPI;
-			ThrowIfFailed(pEncoderTransform->QueryInterface(IID_PPV_ARGS(pCodecAPI.GetAddressOf())));
+			ThrowIfFailed((*ppEncoderTransform)->QueryInterface(IID_PPV_ARGS(pCodecAPI.GetAddressOf())));
 
 			VARIANT variant = {};
 			variant.vt = VT_UI4;
 			variant.ulVal = eAVEncCommonRateControlMode_CBR;
 			ThrowIfFailed(pCodecAPI->SetValue(&CODECAPI_AVEncCommonRateControlMode, &variant));
 
-			variant.ulVal = kDefaultTargetBitrate;
+			variant.ulVal = bitrate;
 			ThrowIfFailed(pCodecAPI->SetValue(&CODECAPI_AVEncCommonMeanBitRate, &variant));
 
 			variant.ulVal = eAVEncAdaptiveMode_Resolution;
@@ -105,16 +109,16 @@ namespace nakamir {
 			ThrowIfFailed(pCodecAPI->SetValue(&CODECAPI_AVLowLatencyMode, &variant));
 
 			// Create output media type from the encoder
-			ThrowIfFailed(pEncoderTransform->GetOutputAvailableType(0, 0, pOutputMediaType.GetAddressOf()));
-			mf_set_default_media_type(pOutputMediaType, width, height, fps);
-			ThrowIfFailed(pEncoderTransform->SetOutputType(0, pOutputMediaType.Get(), 0));
+			ThrowIfFailed((*ppEncoderTransform)->GetOutputAvailableType(0, 0, ppOutputMediaType));
+			mf_set_default_media_type(*ppOutputMediaType, targetSubType, bitrate, width, height, fps);
+			ThrowIfFailed((*ppEncoderTransform)->SetOutputType(0, *ppOutputMediaType, 0));
 
 			// Create input media type for the encoder
-			ThrowIfFailed(pEncoderTransform->GetInputAvailableType(0, 0, pInputMediaType.GetAddressOf()));
-			mf_set_default_media_type(pInputMediaType, width, height, fps);
-			ThrowIfFailed(pEncoderTransform->SetInputType(0, pInputMediaType.Get(), 0));
+			ThrowIfFailed((*ppEncoderTransform)->GetInputAvailableType(0, 0, ppInputMediaType));
+			mf_set_default_media_type(*ppInputMediaType, targetSubType, bitrate, width, height, fps);
+			ThrowIfFailed((*ppEncoderTransform)->SetInputType(0, *ppInputMediaType, 0));
 
-			mf_validate_stream_info(pEncoderTransform);
+			mf_validate_stream_info(*ppEncoderTransform);
 		}
 		catch (const std::exception& e)
 		{
@@ -123,7 +127,7 @@ namespace nakamir {
 		}
 	}
 
-	static void mf_validate_stream_info(const ComPtr<IMFTransform>& pEncoderTransform)
+	static void mf_validate_stream_info(IMFTransform* pEncoderTransform)
 	{
 		try
 		{

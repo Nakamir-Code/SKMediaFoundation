@@ -11,8 +11,7 @@ namespace nakamir {
 
 	struct _nv12_sprite_t {
 		nv12_tex_t nv12_tex;
-		material_t nv12_overlap_material;
-		material_t current_material;
+		material_t material;
 	};
 
 	nv12_sprite_t nv12_sprite_create(nv12_tex_t nv12_tex, sprite_type_ sprite_type, const char* atlas_id = "default");

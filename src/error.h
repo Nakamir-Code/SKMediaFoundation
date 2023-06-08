@@ -3,9 +3,6 @@
 #include <winerror.h>
 #include <exception>
 #include <stdio.h>
-#include <stereokit.h>
-
-using namespace sk;
 
 namespace nakamir
 {

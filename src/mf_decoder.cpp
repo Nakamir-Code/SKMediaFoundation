@@ -6,35 +6,41 @@
 #include <mferror.h>
 #include <codecapi.h>
 #include <d3d11.h>
+#include <stereokit.h>
+#include <wrl/client.h>
 
 #pragma comment(lib, "mfuuid.lib")
 
+using Microsoft::WRL::ComPtr;
+
 namespace nakamir {
 
-	static void mf_validate_stream_info(const ComPtr<IMFTransform>& pDecoderTransform);
+	static void mf_validate_stream_info(/**[in]**/ IMFTransform* pDecoderTransform);
 
-	_VIDEO_DECODER mf_create_mft_software_decoder(const GUID& targetSubType, ComPtr<IMFMediaType>& pInputMediaType, ComPtr<IMFMediaType>& pOutputMediaType, ComPtr<IMFTransform>& pDecoderTransform, IMFActivate*** pppActivate)
+	_VIDEO_DECODER mf_create_mft_software_decoder(const GUID& targetSubType, IMFMediaType** ppInputMediaType, IMFMediaType** ppOutputMediaType, IMFTransform** ppDecoderTransform, IMFActivate*** pppActivate)
 	{
 		_VIDEO_DECODER video_decoder = SOFTWARE_MFT_VIDEO_DECODER;
 		try
 		{
+			const UINT32 bitrate = 5000000;
 			UINT32 width, height, fps, den;
-			ThrowIfFailed(MFGetAttributeSize(pInputMediaType.Get(), MF_MT_FRAME_SIZE, &width, &height));
-			ThrowIfFailed(MFGetAttributeRatio(pInputMediaType.Get(), MF_MT_FRAME_RATE, &fps, &den));
-			mf_set_default_media_type(pInputMediaType, width, height, fps);
+			ThrowIfFailed(MFGetAttributeSize(*ppInputMediaType, MF_MT_FRAME_SIZE, &width, &height));
+			ThrowIfFailed(MFGetAttributeRatio(*ppInputMediaType, MF_MT_FRAME_RATE, &fps, &den));
 
 			// Get the major and subtype of the mp4 video
 			GUID majorType = {};
 			GUID subType = {};
-			ThrowIfFailed(pInputMediaType->GetGUID(MF_MT_MAJOR_TYPE, &majorType));
-			ThrowIfFailed(pInputMediaType->GetGUID(MF_MT_SUBTYPE, &subType));
+			ThrowIfFailed((*ppInputMediaType)->GetGUID(MF_MT_MAJOR_TYPE, &majorType));
+			ThrowIfFailed((*ppInputMediaType)->GetGUID(MF_MT_SUBTYPE, &subType));
+
+			mf_set_default_media_type(*ppInputMediaType, subType, bitrate, width, height, fps);
 
 			// Create H.264 decoder.
 			MFT_REGISTER_TYPE_INFO inputType = {};
 			inputType.guidMajorType = majorType;
 			inputType.guidSubtype = subType;
 
-			MFT_REGISTER_TYPE_INFO outputType;
+			MFT_REGISTER_TYPE_INFO outputType = {};
 			outputType.guidMajorType = MFMediaType_Video;
 			outputType.guidSubtype = targetSubType;
 
@@ -75,10 +81,10 @@ namespace nakamir {
 			}
 
 			// Activate first decoder object and get a pointer to it
-			ThrowIfFailed((*pppActivate)[0]->ActivateObject(IID_PPV_ARGS(pDecoderTransform.GetAddressOf())));
+			ThrowIfFailed((*pppActivate)[0]->ActivateObject(IID_PPV_ARGS(ppDecoderTransform)));
 
 			ComPtr<IMFAttributes> pAttributes;
-			ThrowIfFailed(pDecoderTransform->GetAttributes(pAttributes.GetAddressOf()));
+			ThrowIfFailed((*ppDecoderTransform)->GetAttributes(pAttributes.GetAddressOf()));
 
 			// This attribute does not affect hardware-accelerated video decoding that uses DirectX Video Acceleration (DXVA)
 			ThrowIfFailed(pAttributes->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE));
@@ -102,7 +108,7 @@ namespace nakamir {
 					ThrowIfFailed(pDXGIDeviceManager->ResetDevice(pD3DDevice, resetToken));
 
 					// The Topology Loader calls IMFTransform::ProcessMessage with the MFT_MESSAGE_SET_D3D_MANAGER message
-					ThrowIfFailed(pDecoderTransform->ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, reinterpret_cast<ULONG_PTR>(pDXGIDeviceManager.Get())));
+					ThrowIfFailed((*ppDecoderTransform)->ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, reinterpret_cast<ULONG_PTR>(pDXGIDeviceManager.Get())));
 
 					// It is recommended that you use multi-thread protection on the device context to prevent deadlock issues 
 					ComPtr<ID3D10Multithread> pMultiThread;
@@ -122,23 +128,23 @@ namespace nakamir {
 			if (video_decoder != D3D11_MFT_VIDEO_DECODER)
 			{
 				log_warn("Video decoder is not D3D aware, decoding may be slow.");
-				ThrowIfFailed(pDecoderTransform->ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, NULL));
+				ThrowIfFailed((*ppDecoderTransform)->ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, NULL));
 			}
 
 			// Create input media type for decoder and copy all items from file video media type
-			ThrowIfFailed(pDecoderTransform->SetInputType(0, pInputMediaType.Get(), 0));
+			ThrowIfFailed((*ppDecoderTransform)->SetInputType(0, *ppInputMediaType, 0));
 
 			// Create output media type from the decoder
 			BOOL isOutputTypeConfigured = FALSE;
-			for (int i = 0; SUCCEEDED(pDecoderTransform->GetOutputAvailableType(0, i, pOutputMediaType.GetAddressOf())); ++i)
+			for (int i = 0; SUCCEEDED((*ppDecoderTransform)->GetOutputAvailableType(0, i, ppOutputMediaType)); ++i)
 			{
 				GUID outSubtype = {};
-				ThrowIfFailed(pOutputMediaType->GetGUID(MF_MT_SUBTYPE, &outSubtype));
+				ThrowIfFailed((*ppOutputMediaType)->GetGUID(MF_MT_SUBTYPE, &outSubtype));
 
 				if (outSubtype == targetSubType)
 				{
-					mf_set_default_media_type(pOutputMediaType, width, height, fps);
-					ThrowIfFailed(pDecoderTransform->SetOutputType(0, pOutputMediaType.Get(), 0));
+					mf_set_default_media_type(*ppOutputMediaType, targetSubType, 5000000, width, height, fps);
+					ThrowIfFailed((*ppDecoderTransform)->SetOutputType(0, *ppOutputMediaType, 0));
 					isOutputTypeConfigured = TRUE;
 					break;
 				}
@@ -149,7 +155,7 @@ namespace nakamir {
 				throw std::exception("Failed to find an output type with an NV12 subtype.");
 			}
 
-			mf_validate_stream_info(pDecoderTransform);
+			mf_validate_stream_info(*ppDecoderTransform);
 		}
 		catch (const std::exception& e)
 		{
@@ -160,7 +166,7 @@ namespace nakamir {
 		return video_decoder;
 	}
 
-	static void mf_validate_stream_info(const ComPtr<IMFTransform>& pDecoderTransform)
+	static void mf_validate_stream_info(IMFTransform* pDecoderTransform)
 	{
 		try
 		{
@@ -215,7 +221,7 @@ namespace nakamir {
 		}
 	}
 
-	void mf_decode_sample_to_buffer(const ComPtr<IMFSample> pVideoSample, const ComPtr<IMFTransform> pDecoderTransform, const std::function<void(byte*)>& onReceiveImageBuffer)
+	void mf_decode_sample_to_buffer(IMFSample* pVideoSample, IMFTransform* pDecoderTransform, const std::function<void(byte*)>& onReceiveImageBuffer)
 	{
 		// Start processing the frame
 		LONGLONG llSampleTime = 0, llSampleDuration = 0;
