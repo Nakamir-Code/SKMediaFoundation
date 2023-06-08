@@ -34,6 +34,7 @@ set(NAK_EXAMPLES
 	src/mf_examples.h
 
 	src/examples/mf_decode_from_url.cpp
+	src/examples/mf_roundtrip_mediacapture.cpp
 )
 
 # Add source files to our target executable

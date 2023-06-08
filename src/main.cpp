@@ -40,6 +40,7 @@ int main(void) {
 	mf_decode_from_url(L"http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4", nv12_tex, &mf_shutdown_thread);
 
 	// SCENARIO 2: 
+	mf_roundtrip_mediacapture(nv12_tex);
 
 	sk_run(
 		[]() {

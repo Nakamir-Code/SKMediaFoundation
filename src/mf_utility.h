@@ -11,7 +11,7 @@ using Microsoft::WRL::ComPtr;
 
 namespace nakamir {
 
-	static void mf_set_default_media_type(/**[in]**/ IMFMediaType* pMediaType, const GUID& subType, UINT bitrate, UINT32 width, UINT32 height, UINT32 fps)
+	static void mf_set_default_media_type(/**[in]**/ IMFMediaType* pMediaType, const GUID& subType, UINT32 bitrate, UINT32 width, UINT32 height, UINT32 fps)
 	{
 		try
 		{

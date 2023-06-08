@@ -13,15 +13,15 @@ using Microsoft::WRL::ComPtr;
 
 namespace nakamir {
 
-	IMFActivate** ppActivate = NULL;
+	static IMFActivate** ppActivate = NULL;
 
-	std::thread sourceReaderThread;
+	static std::thread sourceReaderThread;
 
-	ComPtr<IMFSourceReader> pSourceReader;
-	ComPtr<IMFTransform> pDecoderTransform; // This is the H264 Decoder MFT
+	static ComPtr<IMFSourceReader> pSourceReader;
+	static ComPtr<IMFTransform> pDecoderTransform;
 
-	std::atomic_bool _cancellationToken;
-	nv12_tex_t _nv12_tex;
+	static std::atomic_bool _cancellationToken;
+	static nv12_tex_t _nv12_tex;
 
 	// PRIVATE METHODS
 	static void mf_decode_source_reader_to_buffer(const ComPtr<IMFSourceReader>& pSourceReader, const ComPtr<IMFTransform>& pDecoderTransform);
@@ -51,36 +51,42 @@ namespace nakamir {
 
 			// Get a pointer to the media source
 			ComPtr<IMFMediaSource> mediaFileSource;
-			ThrowIfFailed(uSource->QueryInterface(IID_PPV_ARGS(&mediaFileSource)));
+			ThrowIfFailed(uSource->QueryInterface(IID_PPV_ARGS(mediaFileSource.GetAddressOf())));
 
 			// Create attributes for the source reader
 			ComPtr<IMFAttributes> pVideoReaderAttributes;
-			ThrowIfFailed(MFCreateAttributes(&pVideoReaderAttributes, 0));
+			ThrowIfFailed(MFCreateAttributes(pVideoReaderAttributes.GetAddressOf(), 0));
 
 			// Create a source reader from the media source
 			ThrowIfFailed(MFCreateSourceReaderFromMediaSource(mediaFileSource.Get(), pVideoReaderAttributes.Get(), pSourceReader.GetAddressOf()));
 
 			// Get the current media type of the first video stream
-			ComPtr<IMFMediaType> pFileVideoMediaType;
-			ThrowIfFailed(pSourceReader->GetCurrentMediaType((DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM, &pFileVideoMediaType));
-
-			//ComPtr<IMFMediaType> pH264OutputMediaType;
-			//mf_create_mft_software_encoder(MFVideoFormat_H264, pFileVideoMediaType, pH264OutputMediaType, pDecoderTransform.GetAddressOf(), &ppActivate);
-			//// Apply H264 settings and update the output media type
-			//ThrowIfFailed(pH264OutputMediaType->SetUINT32(MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_Base));
-			//ThrowIfFailed(pDecoderTransform->SetOutputType(0, pH264OutputMediaType.Get(), 0));
+			ComPtr<IMFMediaType> pInputMediaType;
+			ThrowIfFailed(pSourceReader->GetCurrentMediaType((DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM, pInputMediaType.GetAddressOf()));
 
 			ComPtr<IMFMediaType> pOutputMediaType;
-			_VIDEO_DECODER decoderType = mf_create_mft_software_decoder(MFVideoFormat_NV12, pFileVideoMediaType.GetAddressOf(), pOutputMediaType.GetAddressOf(), pDecoderTransform.GetAddressOf(), &ppActivate);
+			ThrowIfFailed(MFCreateMediaType(pOutputMediaType.GetAddressOf()));
+			ThrowIfFailed(pInputMediaType->CopyAllItems(pOutputMediaType.Get()));
+			ThrowIfFailed(pOutputMediaType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12));
+
+			_VIDEO_DECODER decoderType = mf_create_mft_software_decoder(pInputMediaType.Get(), pOutputMediaType.Get(), pDecoderTransform.GetAddressOf(), &ppActivate);
 
 			switch (decoderType)
 			{
 			case SOFTWARE_MFT_VIDEO_DECODER:
+			{
 				sourceReaderThread = std::thread(mf_decode_source_reader_to_buffer, pSourceReader, pDecoderTransform);
 				break;
+			}
 			case D3D11_MFT_VIDEO_DECODER:
+			{
+				ComPtr<IMFAttributes> pAttributes;
+				ThrowIfFailed(pDecoderTransform->GetAttributes(pAttributes.GetAddressOf()));
+				ThrowIfFailed(pAttributes->SetUINT32(CODECAPI_AVDecVideoAcceleration_H264, TRUE));
+
 				sourceReaderThread = std::thread(mf_decode_source_reader_to_buffer, pSourceReader, pDecoderTransform);
 				break;
+			}
 			default: throw std::exception("Decoder type not found!");
 			}
 		}
@@ -112,7 +118,7 @@ namespace nakamir {
 				&streamIndex,                   // Receives the actual stream index. 
 				&flags,                         // Receives status flags.
 				&llSampleTime,					// Receives the timestamp.
-				&pVideoSample                   // Receives the sample or NULL.
+				pVideoSample.GetAddressOf()     // Receives the sample or NULL.
 			));
 
 			if (flags & MF_SOURCE_READERF_STREAMTICK)
@@ -127,8 +133,9 @@ namespace nakamir {
 
 			if (pVideoSample)
 			{
-				mf_decode_sample_to_buffer(pVideoSample.Get(), pDecoderTransform.Get(), [](byte* byteBuffer) {
-					nv12_tex_set_buffer(_nv12_tex, byteBuffer);
+				mf_decode_sample_to_buffer(pVideoSample.Get(), pDecoderTransform.Get(),
+					[](byte* byteBuffer) {
+						nv12_tex_set_buffer(_nv12_tex, byteBuffer);
 					});
 			}
 		}

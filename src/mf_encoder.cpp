@@ -20,29 +20,27 @@ namespace nakamir {
 
 	static void mf_validate_stream_info(/**[in]**/ IMFTransform* pEncoderTransform);
 
-	void mf_create_mft_software_encoder(const GUID& targetSubType, IMFMediaType** ppInputMediaType, IMFMediaType** ppOutputMediaType, IMFTransform** ppEncoderTransform, IMFActivate*** pppActivate)
+	void mf_create_mft_software_encoder(IMFMediaType* pInputMediaType, IMFMediaType* pOutputMediaType, IMFTransform** ppEncoderTransform, IMFActivate*** pppActivate)
 	{
 		try
 		{
-			const UINT32 bitrate = 5000000;
-			UINT32 width, height, fps, den;
-			ThrowIfFailed(MFGetAttributeSize(*ppInputMediaType, MF_MT_FRAME_SIZE, &width, &height));
-			ThrowIfFailed(MFGetAttributeRatio(*ppInputMediaType, MF_MT_FRAME_RATE, &fps, &den));
+			GUID inputMajorType = {};
+			GUID inputSubType = {};
+			ThrowIfFailed(pInputMediaType->GetGUID(MF_MT_MAJOR_TYPE, &inputMajorType));
+			ThrowIfFailed(pInputMediaType->GetGUID(MF_MT_SUBTYPE, &inputSubType));
 
-			// Get the major and subtype of the mp4 video
-			GUID majorType = {};
-			GUID subType = {};
-			ThrowIfFailed((*ppInputMediaType)->GetGUID(MF_MT_MAJOR_TYPE, &majorType));
-			ThrowIfFailed((*ppInputMediaType)->GetGUID(MF_MT_SUBTYPE, &subType));
-
-			// Create H.264 encoder.
 			MFT_REGISTER_TYPE_INFO inputType = {};
-			inputType.guidMajorType = majorType;
-			inputType.guidSubtype = MFVideoFormat_NV12;// subType; // TODO: comment back out
+			inputType.guidMajorType = inputMajorType;
+			inputType.guidSubtype = inputSubType;
+
+			GUID outputMajorType = {};
+			GUID outputSubType = {};
+			ThrowIfFailed(pOutputMediaType->GetGUID(MF_MT_MAJOR_TYPE, &outputMajorType));
+			ThrowIfFailed(pOutputMediaType->GetGUID(MF_MT_SUBTYPE, &outputSubType));
 
 			MFT_REGISTER_TYPE_INFO outputType = {};
-			outputType.guidMajorType = MFMediaType_Video;
-			outputType.guidSubtype = targetSubType;
+			outputType.guidMajorType = outputMajorType;
+			outputType.guidSubtype = outputSubType;
 
 			// Enumerate encoders that match the input type
 			UINT32 count = 0;
@@ -98,6 +96,8 @@ namespace nakamir {
 			variant.ulVal = eAVEncCommonRateControlMode_CBR;
 			ThrowIfFailed(pCodecAPI->SetValue(&CODECAPI_AVEncCommonRateControlMode, &variant));
 
+			UINT32 bitrate;
+			ThrowIfFailed(pOutputMediaType->GetUINT32(MF_MT_AVG_BITRATE, &bitrate));
 			variant.ulVal = bitrate;
 			ThrowIfFailed(pCodecAPI->SetValue(&CODECAPI_AVEncCommonMeanBitRate, &variant));
 
@@ -108,15 +108,11 @@ namespace nakamir {
 			variant.boolVal = VARIANT_TRUE;
 			ThrowIfFailed(pCodecAPI->SetValue(&CODECAPI_AVLowLatencyMode, &variant));
 
-			// Create output media type from the encoder
-			ThrowIfFailed((*ppEncoderTransform)->GetOutputAvailableType(0, 0, ppOutputMediaType));
-			mf_set_default_media_type(*ppOutputMediaType, targetSubType, bitrate, width, height, fps);
-			ThrowIfFailed((*ppEncoderTransform)->SetOutputType(0, *ppOutputMediaType, 0));
+			// Set the output media type
+			ThrowIfFailed((*ppEncoderTransform)->SetOutputType(0, pOutputMediaType, 0));
 
-			// Create input media type for the encoder
-			ThrowIfFailed((*ppEncoderTransform)->GetInputAvailableType(0, 0, ppInputMediaType));
-			mf_set_default_media_type(*ppInputMediaType, targetSubType, bitrate, width, height, fps);
-			ThrowIfFailed((*ppEncoderTransform)->SetInputType(0, *ppInputMediaType, 0));
+			// Set the input media type
+			ThrowIfFailed((*ppEncoderTransform)->SetInputType(0, pInputMediaType, 0));
 
 			mf_validate_stream_info(*ppEncoderTransform);
 		}
@@ -158,6 +154,128 @@ namespace nakamir {
 			else
 			{
 				printf("\t+---- The encoder should allocate its own samples ----+\n\n");
+			}
+		}
+		catch (const std::exception& e)
+		{
+			log_err(e.what());
+			throw e;
+		}
+	}
+
+	void mf_encode_sample_to_buffer(IMFSample* pVideoSample, IMFTransform* pEncoderTransform, const std::function<void(uint32_t, byte*)>& onReceiveEncodedBuffer)
+	{
+		// Start processing the frame
+		LONGLONG llSampleTime = 0, llSampleDuration = 0;
+		DWORD sampleFlags = 0;
+
+		try
+		{
+			ThrowIfFailed(pVideoSample->GetSampleTime(&llSampleTime));
+			ThrowIfFailed(pVideoSample->GetSampleDuration(&llSampleDuration));
+			ThrowIfFailed(pVideoSample->GetSampleFlags(&sampleFlags));
+
+			// Gets total length of ALL media buffer samples. We can use here because it's only a
+			// single buffer sample copy
+			DWORD srcBufferLength;
+			ThrowIfFailed(pVideoSample->GetTotalLength(&srcBufferLength));
+
+			// The video processor MFT requires input samples to be allocated by the caller
+			ComPtr<IMFSample> pInputSample;
+			ThrowIfFailed(MFCreateSample(pInputSample.GetAddressOf()));
+
+			// Adds a ref count to the pDstBuffer object.
+			ComPtr<IMFMediaBuffer> pInputBuffer;
+			ThrowIfFailed(MFCreateMemoryBuffer(srcBufferLength, pInputBuffer.GetAddressOf()));
+
+			// Adds another ref count to the pDstBuffer object.
+			ThrowIfFailed(pInputSample->AddBuffer(pInputBuffer.Get()));
+
+			ThrowIfFailed(pVideoSample->CopyAllItems(pInputSample.Get()));
+			ThrowIfFailed(pVideoSample->CopyToBuffer(pInputBuffer.Get()));
+
+			// Apply the H264 encoder transform
+			ThrowIfFailed(pEncoderTransform->ProcessInput(0, pInputSample.Get(), 0));
+
+			MFT_OUTPUT_STREAM_INFO StreamInfo = {};
+			ThrowIfFailed(pEncoderTransform->GetOutputStreamInfo(0, &StreamInfo));
+
+			MFT_OUTPUT_DATA_BUFFER outputDataBuffer = {};
+			outputDataBuffer.dwStreamID = 0;
+			outputDataBuffer.dwStatus = 0;
+			outputDataBuffer.pEvents = NULL;
+			outputDataBuffer.pSample = NULL;
+
+			DWORD mftProccessStatus = 0;
+			HRESULT mftProcessOutput = S_OK;
+
+			// If the encoder returns MF_E_NOTACCEPTING then it means that it has enough
+			// data to produce one or more output samples.
+			// Here, we generate new output by calling IMFTransform::ProcessOutput until it
+			// results in MF_E_TRANSFORM_NEED_MORE_INPUT which breaks out of the loop.
+			while (mftProcessOutput == S_OK)
+			{
+				IMFSample* pEncodedOutSample;
+
+				if ((StreamInfo.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES) == 0)
+				{
+					ThrowIfFailed(MFCreateSample(&pEncodedOutSample));
+
+					ComPtr<IMFMediaBuffer> pBuffer;
+					ThrowIfFailed(MFCreateMemoryBuffer(StreamInfo.cbSize, pBuffer.GetAddressOf()));
+					ThrowIfFailed(pEncodedOutSample->AddBuffer(pBuffer.Get()));
+
+					outputDataBuffer.pSample = pEncodedOutSample;
+				}
+
+				mftProcessOutput = pEncoderTransform->ProcessOutput(0, 1, &outputDataBuffer, &mftProccessStatus);
+
+				if (outputDataBuffer.dwStatus & MFT_OUTPUT_DATA_BUFFER_FORMAT_CHANGE)
+				{
+					// Get the new media type for the stream
+					ComPtr<IMFMediaType> pNewMediaType;
+					ThrowIfFailed(pEncoderTransform->GetOutputAvailableType(0, 0, pNewMediaType.GetAddressOf()));
+					ThrowIfFailed(pEncoderTransform->SetOutputType(0, pNewMediaType.Get(), 0));
+
+					ThrowIfFailed(pEncoderTransform->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0));
+
+					mftProcessOutput = pEncoderTransform->ProcessOutput(0, 1, &outputDataBuffer, &mftProccessStatus);
+				}
+
+				//printf("Process output result %.2X, MFT status %.2X.\n", mftProcessOutput, mftProccessStatus);
+
+				if (mftProcessOutput == S_OK)
+				{
+					// Write the encoded sample to the nv12 texture
+					ComPtr<IMFMediaBuffer> buffer;
+					ThrowIfFailed(outputDataBuffer.pSample->GetBufferByIndex(0, buffer.GetAddressOf()));
+
+					DWORD bufferLength;
+					ThrowIfFailed(buffer->GetCurrentLength(&bufferLength));
+
+					printf("Sample size %i.\n", bufferLength);
+
+					byte* byteBuffer = NULL;
+					DWORD maxLength = 0, currentLength = 0;
+					ThrowIfFailed(buffer->Lock(&byteBuffer, &maxLength, &currentLength));
+					onReceiveEncodedBuffer(currentLength, byteBuffer);
+					ThrowIfFailed(buffer->Unlock());
+
+					printf("Output size %i.\n", currentLength);
+
+					// Release sample as it is not processed any further.
+					if (outputDataBuffer.pSample)
+						outputDataBuffer.pSample->Release();
+					if (outputDataBuffer.pEvents)
+						outputDataBuffer.pEvents->Release();
+				}
+
+				// More input is not an error condition but it means the allocated output sample is empty
+				if (mftProcessOutput != S_OK && mftProcessOutput != MF_E_TRANSFORM_NEED_MORE_INPUT)
+				{
+					printf("MFT ProcessOutput error result %.2X, MFT status %.2X.\n", mftProcessOutput, mftProccessStatus);
+					throw std::exception("Error getting H264 encoder transform output, error code %.2X.\n", mftProcessOutput);
+				}
 			}
 		}
 		catch (const std::exception& e)

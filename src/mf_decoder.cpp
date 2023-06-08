@@ -17,32 +17,28 @@ namespace nakamir {
 
 	static void mf_validate_stream_info(/**[in]**/ IMFTransform* pDecoderTransform);
 
-	_VIDEO_DECODER mf_create_mft_software_decoder(const GUID& targetSubType, IMFMediaType** ppInputMediaType, IMFMediaType** ppOutputMediaType, IMFTransform** ppDecoderTransform, IMFActivate*** pppActivate)
+	_VIDEO_DECODER mf_create_mft_software_decoder(IMFMediaType* pInputMediaType, IMFMediaType* pOutputMediaType, IMFTransform** ppDecoderTransform, IMFActivate*** pppActivate)
 	{
 		_VIDEO_DECODER video_decoder = SOFTWARE_MFT_VIDEO_DECODER;
 		try
 		{
-			const UINT32 bitrate = 5000000;
-			UINT32 width, height, fps, den;
-			ThrowIfFailed(MFGetAttributeSize(*ppInputMediaType, MF_MT_FRAME_SIZE, &width, &height));
-			ThrowIfFailed(MFGetAttributeRatio(*ppInputMediaType, MF_MT_FRAME_RATE, &fps, &den));
+			GUID inputMajorType = {};
+			GUID inputSubType = {};
+			ThrowIfFailed(pInputMediaType->GetGUID(MF_MT_MAJOR_TYPE, &inputMajorType));
+			ThrowIfFailed(pInputMediaType->GetGUID(MF_MT_SUBTYPE, &inputSubType));
 
-			// Get the major and subtype of the mp4 video
-			GUID majorType = {};
-			GUID subType = {};
-			ThrowIfFailed((*ppInputMediaType)->GetGUID(MF_MT_MAJOR_TYPE, &majorType));
-			ThrowIfFailed((*ppInputMediaType)->GetGUID(MF_MT_SUBTYPE, &subType));
-
-			mf_set_default_media_type(*ppInputMediaType, subType, bitrate, width, height, fps);
-
-			// Create H.264 decoder.
 			MFT_REGISTER_TYPE_INFO inputType = {};
-			inputType.guidMajorType = majorType;
-			inputType.guidSubtype = subType;
+			inputType.guidMajorType = inputMajorType;
+			inputType.guidSubtype = inputSubType;
+
+			GUID outputMajorType = {};
+			GUID outputSubType = {};
+			ThrowIfFailed(pOutputMediaType->GetGUID(MF_MT_MAJOR_TYPE, &outputMajorType));
+			ThrowIfFailed(pOutputMediaType->GetGUID(MF_MT_SUBTYPE, &outputSubType));
 
 			MFT_REGISTER_TYPE_INFO outputType = {};
-			outputType.guidMajorType = MFMediaType_Video;
-			outputType.guidSubtype = targetSubType;
+			outputType.guidMajorType = outputMajorType;
+			outputType.guidSubtype = outputSubType;
 
 			// Enumerate decoders that match the input type
 			UINT32 count = 0;
@@ -96,8 +92,6 @@ namespace nakamir {
 			{
 				try
 				{
-					ThrowIfFailed(pAttributes->SetUINT32(CODECAPI_AVDecVideoAcceleration_H264, TRUE));
-
 					// Create the DXGI Device Manager
 					UINT resetToken;
 					ComPtr<IMFDXGIDeviceManager> pDXGIDeviceManager;
@@ -117,7 +111,7 @@ namespace nakamir {
 
 					video_decoder = D3D11_MFT_VIDEO_DECODER;
 
-					log_info("Video decoder is hardware-accelerated through DXVA");
+					log_info("Video decoder is hardware accelerated through DXVA");
 				}
 				catch (const std::exception& e)
 				{
@@ -131,29 +125,11 @@ namespace nakamir {
 				ThrowIfFailed((*ppDecoderTransform)->ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, NULL));
 			}
 
-			// Create input media type for decoder and copy all items from file video media type
-			ThrowIfFailed((*ppDecoderTransform)->SetInputType(0, *ppInputMediaType, 0));
+			// Set the input media type
+			ThrowIfFailed((*ppDecoderTransform)->SetInputType(0, pInputMediaType, 0));
 
-			// Create output media type from the decoder
-			BOOL isOutputTypeConfigured = FALSE;
-			for (int i = 0; SUCCEEDED((*ppDecoderTransform)->GetOutputAvailableType(0, i, ppOutputMediaType)); ++i)
-			{
-				GUID outSubtype = {};
-				ThrowIfFailed((*ppOutputMediaType)->GetGUID(MF_MT_SUBTYPE, &outSubtype));
-
-				if (outSubtype == targetSubType)
-				{
-					mf_set_default_media_type(*ppOutputMediaType, targetSubType, 5000000, width, height, fps);
-					ThrowIfFailed((*ppDecoderTransform)->SetOutputType(0, *ppOutputMediaType, 0));
-					isOutputTypeConfigured = TRUE;
-					break;
-				}
-			}
-
-			if (!isOutputTypeConfigured)
-			{
-				throw std::exception("Failed to find an output type with an NV12 subtype.");
-			}
+			// Set the output media type
+			ThrowIfFailed((*ppDecoderTransform)->SetOutputType(0, pOutputMediaType, 0));
 
 			mf_validate_stream_info(*ppDecoderTransform);
 		}
@@ -273,17 +249,17 @@ namespace nakamir {
 			// results in MF_E_TRANSFORM_NEED_MORE_INPUT which breaks out of the loop.
 			while (mftProcessOutput == S_OK)
 			{
-				IMFSample* pH264DecodeOutSample;
+				IMFSample* pDecodedOutSample;
 
 				if ((StreamInfo.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES) == 0)
 				{
-					ThrowIfFailed(MFCreateSample(&pH264DecodeOutSample));
+					ThrowIfFailed(MFCreateSample(&pDecodedOutSample));
 
 					ComPtr<IMFMediaBuffer> pBuffer;
 					ThrowIfFailed(MFCreateMemoryBuffer(StreamInfo.cbSize, pBuffer.GetAddressOf()));
-					ThrowIfFailed(pH264DecodeOutSample->AddBuffer(pBuffer.Get()));
+					ThrowIfFailed(pDecodedOutSample->AddBuffer(pBuffer.Get()));
 
-					outputDataBuffer.pSample = pH264DecodeOutSample;
+					outputDataBuffer.pSample = pDecodedOutSample;
 				}
 
 				mftProcessOutput = pDecoderTransform->ProcessOutput(0, 1, &outputDataBuffer, &mftProccessStatus);
