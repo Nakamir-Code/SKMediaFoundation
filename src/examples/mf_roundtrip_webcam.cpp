@@ -105,8 +105,9 @@ namespace nakamir {
 		{
 			// Get the first available webcam.
 			ComPtr<IMFAttributes> pVideoConfig;
-			ThrowIfFailed(MFCreateAttributes(pVideoConfig.GetAddressOf(), 1));
+			ThrowIfFailed(MFCreateAttributes(pVideoConfig.GetAddressOf(), 2));
 			ThrowIfFailed(pVideoConfig->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID));
+			ThrowIfFailed(pVideoConfig->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE));
 
 			UINT32 videoDeviceCount = 0;
 			ThrowIfFailed(MFEnumDeviceSources(pVideoConfig.Get(), &ppVideoActivate, &videoDeviceCount));

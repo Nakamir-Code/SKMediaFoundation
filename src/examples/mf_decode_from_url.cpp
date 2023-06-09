@@ -110,7 +110,8 @@ namespace nakamir {
 
 			// Create attributes for the source reader
 			ComPtr<IMFAttributes> pVideoReaderAttributes;
-			ThrowIfFailed(MFCreateAttributes(pVideoReaderAttributes.GetAddressOf(), 0));
+			ThrowIfFailed(MFCreateAttributes(pVideoReaderAttributes.GetAddressOf(), 1));
+			ThrowIfFailed(pVideoReaderAttributes->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE));
 
 			// Create a source reader from the media source
 			ThrowIfFailed(MFCreateSourceReaderFromMediaSource(mediaFileSource.Get(), pVideoReaderAttributes.Get(), pSourceReader.GetAddressOf()));
