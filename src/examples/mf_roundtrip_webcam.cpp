@@ -23,7 +23,7 @@ using namespace sk;
 
 namespace nakamir {
 
-	const UINT32 bitrate = 5000000;
+	const UINT32 bitrate = 3000000;
 
 	// PRIVATE METHODS
 	static void mf_roundtrip_webcam_impl(UINT32* width, UINT32* height, UINT32* fps);
@@ -133,9 +133,10 @@ namespace nakamir {
 			ComPtr<IMFMediaType> pInputMediaType;
 			ThrowIfFailed(pSourceReader->GetCurrentMediaType((DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM, pInputMediaType.GetAddressOf()));
 
-			UINT32 den;
+			UINT32 num, den;
 			ThrowIfFailed(MFGetAttributeSize(pInputMediaType.Get(), MF_MT_FRAME_SIZE, width, height));
-			ThrowIfFailed(MFGetAttributeRatio(pInputMediaType.Get(), MF_MT_FRAME_RATE, fps, &den));
+			ThrowIfFailed(MFGetAttributeRatio(pInputMediaType.Get(), MF_MT_FRAME_RATE, &num, &den));
+			*fps = static_cast<double>(num) / den;
 			mf_set_default_media_type(pInputMediaType.Get(), MFVideoFormat_NV12, bitrate, *width, *height, *fps);
 
 			ComPtr<IMFMediaType> pOutputMediaType;

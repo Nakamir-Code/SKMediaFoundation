@@ -1,3 +1,5 @@
+#define PRINT_MBPS
+
 #include "mf_encoder.h"
 #include "mf_utility.h"
 #include "error.h"
@@ -17,7 +19,10 @@
 using Microsoft::WRL::ComPtr;
 
 namespace nakamir {
-
+#ifdef PRINT_MBPS
+	static UINT64 _avg_byte_size = 0;
+	static UINT64 _num_frames = 0;
+#endif
 	static void mf_validate_stream_info(/**[in]**/ IMFTransform* pEncoderTransform);
 
 	void mf_create_mft_software_encoder(IMFMediaType* pInputMediaType, IMFMediaType* pOutputMediaType, IMFTransform** ppEncoderTransform, IMFActivate*** pppActivate)
@@ -220,7 +225,20 @@ namespace nakamir {
 				if (mftProcessOutput == S_OK)
 				{
 					onReceiveEncodedBuffer(outputDataBuffer.pSample);
+#ifdef PRINT_MBPS
+					double cur_weight = 1.0 / ++_num_frames;
+					DWORD bufferLength;
+					ThrowIfFailed(outputDataBuffer.pSample->GetTotalLength(&bufferLength));
+					_avg_byte_size = bufferLength * cur_weight + _avg_byte_size * (1 - cur_weight);
 
+					ComPtr<IMFMediaType> pInputType;
+					ThrowIfFailed(pEncoderTransform->GetInputCurrentType(0, &pInputType));
+					UINT32 num = 0, den = 0;
+					ThrowIfFailed(MFGetAttributeRatio(pInputType.Get(), MF_MT_FRAME_RATE, &num, &den));
+					double frameRate = static_cast<double>(num) / den;
+					double avg_megabytes_per_second = (_avg_byte_size * frameRate) / (1024.0 * 1024.0);
+					printf("\rAvg Encoding Size: %.2f MBps", avg_megabytes_per_second);
+#endif
 					// Release events as it is not processed any further.
 					if (outputDataBuffer.pSample && !pEncodedOutSample)
 						outputDataBuffer.pSample->Release();
