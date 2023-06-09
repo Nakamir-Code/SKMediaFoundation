@@ -239,7 +239,7 @@ namespace nakamir {
 					double avg_megabytes_per_second = (_avg_byte_size * frameRate) / (1024.0 * 1024.0);
 					printf("\rAvg Encoding Size: %.2f MBps", avg_megabytes_per_second);
 #endif
-					// Release events as it is not processed any further.
+					// Release the completed sample if our smart pointer doesn't do it for us
 					if (outputDataBuffer.pSample && !pEncodedOutSample)
 						outputDataBuffer.pSample->Release();
 					if (outputDataBuffer.pEvents)

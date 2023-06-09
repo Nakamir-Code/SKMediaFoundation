@@ -21,5 +21,4 @@ namespace nakamir {
 		mesh_draw(mesh_quad, nv12_sprite->material, render_matrix);
 		mesh_release(mesh_quad);
 	}
-
 } // namespace nakamir

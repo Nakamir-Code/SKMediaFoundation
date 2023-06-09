@@ -255,7 +255,7 @@ namespace nakamir {
 				{
 					onReceiveImageBuffer(outputDataBuffer.pSample);
 
-					// Release sample as it is not processed any further.
+					// Release the completed sample if our smart pointer doesn't do it for us
 					if (outputDataBuffer.pSample && !pDecodedOutSample)
 						outputDataBuffer.pSample->Release();
 					if (outputDataBuffer.pEvents)

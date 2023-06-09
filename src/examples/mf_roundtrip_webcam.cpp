@@ -26,8 +26,8 @@ namespace nakamir {
 	const UINT32 bitrate = 3000000;
 
 	// PRIVATE METHODS
-	static void mf_roundtrip_webcam_impl(UINT32* width, UINT32* height, UINT32* fps);
-	static void mf_source_reader_roundtrip(const ComPtr<IMFSourceReader>& pSourceReader, const ComPtr<IMFTransform>& pEncoderTransform, const ComPtr<IMFTransform>& pDecoderTransform);
+	static void mf_roundtrip_webcam_impl(/**[out]**/ UINT32* width, /**[out]**/ UINT32* height, /**[out]**/ UINT32* fps);
+	static void mf_source_reader_roundtrip(/**[in]**/ const ComPtr<IMFSourceReader>& pSourceReader, /**[in]**/ const ComPtr<IMFTransform>& pEncoderTransform, /**[in]**/ const ComPtr<IMFTransform>& pDecoderTransform);
 	static void mf_shutdown_thread();
 
 	static IMFActivate** ppEncoderActivate = NULL;
@@ -65,7 +65,6 @@ namespace nakamir {
 		if (FAILED(MFStartup(MF_VERSION)))
 			return;
 
-		// Read from the webcam, encode the sample, decode the sample, and finally render to the screen
 		mf_roundtrip_webcam_impl(&video_width, &video_height, &video_fps);
 
 		// Set up the render plane based on the video dimensions
@@ -103,7 +102,7 @@ namespace nakamir {
 	{
 		try
 		{
-			// Get the first available webcam.
+			// Get the first available webcam
 			ComPtr<IMFAttributes> pVideoConfig;
 			ThrowIfFailed(MFCreateAttributes(pVideoConfig.GetAddressOf(), 2));
 			ThrowIfFailed(pVideoConfig->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID));
@@ -164,11 +163,11 @@ namespace nakamir {
 	{
 		try
 		{
-			// Send messages to encoder to start streaming
+			// Send messages to the encoder to start streaming
 			ThrowIfFailed(pEncoderTransform->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, NULL));
 			ThrowIfFailed(pEncoderTransform->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, NULL));
 
-			// Send messages to decoder to flush data and start streaming
+			// Send messages to the decoder to flush data and start streaming
 			ThrowIfFailed(pDecoderTransform->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, NULL));
 			ThrowIfFailed(pDecoderTransform->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, NULL));
 			ThrowIfFailed(pDecoderTransform->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, NULL));
@@ -240,6 +239,7 @@ namespace nakamir {
 		sourceReaderThread.join();
 
 		pSourceReader.Reset();
+		pEncoderTransform.Reset();
 		pDecoderTransform.Reset();
 
 		if (ppEncoderActivate && *ppEncoderActivate)
