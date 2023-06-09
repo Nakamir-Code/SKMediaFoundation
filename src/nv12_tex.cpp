@@ -5,7 +5,6 @@
 namespace nakamir {
 
 	nv12_tex_t nv12_tex_create(int width, int height) {
-		// TODO: this shader must be included as builtin in Nakamir's assets.
 		shader_t nv12_quad_shader = shader_create_file("nv12_quad.hlsl");
 		if (nv12_quad_shader == nullptr) {
 			log_err("NV12 quad shader not found!");

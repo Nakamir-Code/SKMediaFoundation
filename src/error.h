@@ -24,7 +24,7 @@ namespace nakamir
         HRESULT result;
     };
 
-    // Helper utility converts D3D API failures into exceptions.
+    // Helper utility converts D3D API failures into exceptions
     inline void ThrowIfFailed(HRESULT hr)
     {
         if (FAILED(hr))

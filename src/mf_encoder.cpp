@@ -1,5 +1,3 @@
-#define PRINT_MBPS
-
 #include "mf_encoder.h"
 #include "mf_utility.h"
 #include "error.h"
@@ -19,10 +17,6 @@
 using Microsoft::WRL::ComPtr;
 
 namespace nakamir {
-#ifdef PRINT_MBPS
-	static UINT64 _avg_byte_size = 0;
-	static UINT64 _num_frames = 0;
-#endif
 	static void mf_validate_stream_info(/**[in]**/ IMFTransform* pEncoderTransform);
 
 	void mf_create_mft_software_encoder(IMFMediaType* pInputMediaType, IMFMediaType* pOutputMediaType, IMFTransform** ppEncoderTransform, IMFActivate*** pppActivate)
@@ -159,99 +153,6 @@ namespace nakamir {
 			else
 			{
 				printf("\t+---- The encoder should allocate its own samples ----+\n\n");
-			}
-		}
-		catch (const std::exception& e)
-		{
-			log_err(e.what());
-			throw e;
-		}
-	}
-
-	void mf_encode_sample_to_buffer(IMFSample* pVideoSample, IMFTransform* pEncoderTransform, const std::function<void(IMFSample*)>& onReceiveEncodedBuffer)
-	{
-		try
-		{
-			// Apply the H264 encoder transform
-			ThrowIfFailed(pEncoderTransform->ProcessInput(0, pVideoSample, 0));
-
-			MFT_OUTPUT_STREAM_INFO StreamInfo = {};
-			ThrowIfFailed(pEncoderTransform->GetOutputStreamInfo(0, &StreamInfo));
-
-			MFT_OUTPUT_DATA_BUFFER outputDataBuffer = {};
-			outputDataBuffer.dwStreamID = 0;
-			outputDataBuffer.dwStatus = 0;
-			outputDataBuffer.pEvents = NULL;
-			outputDataBuffer.pSample = NULL;
-
-			DWORD mftProccessStatus = 0;
-			HRESULT mftProcessOutput = S_OK;
-
-			ComPtr<IMFSample> pEncodedOutSample;
-
-			// If the encoder returns MF_E_NOTACCEPTING then it means that it has enough
-			// data to produce one or more output samples.
-			// Here, we generate new output by calling IMFTransform::ProcessOutput until it
-			// results in MF_E_TRANSFORM_NEED_MORE_INPUT which breaks out of the loop.
-			while (mftProcessOutput == S_OK)
-			{
-				if ((StreamInfo.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES) == 0)
-				{
-					ThrowIfFailed(MFCreateSample(pEncodedOutSample.ReleaseAndGetAddressOf()));
-
-					ComPtr<IMFMediaBuffer> pBuffer;
-					ThrowIfFailed(MFCreateMemoryBuffer(StreamInfo.cbSize, pBuffer.GetAddressOf()));
-					ThrowIfFailed(pEncodedOutSample->AddBuffer(pBuffer.Get()));
-
-					outputDataBuffer.pSample = pEncodedOutSample.Get();
-				}
-
-				mftProcessOutput = pEncoderTransform->ProcessOutput(0, 1, &outputDataBuffer, &mftProccessStatus);
-
-				if (outputDataBuffer.dwStatus & MFT_OUTPUT_DATA_BUFFER_FORMAT_CHANGE)
-				{
-					// Get the new media type for the stream
-					ComPtr<IMFMediaType> pNewMediaType;
-					ThrowIfFailed(pEncoderTransform->GetOutputAvailableType(0, 0, pNewMediaType.GetAddressOf()));
-					ThrowIfFailed(pEncoderTransform->SetOutputType(0, pNewMediaType.Get(), 0));
-
-					ThrowIfFailed(pEncoderTransform->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0));
-
-					mftProcessOutput = pEncoderTransform->ProcessOutput(0, 1, &outputDataBuffer, &mftProccessStatus);
-				}
-
-				//printf("Process output result %.2X, MFT status %.2X.\n", mftProcessOutput, mftProccessStatus);
-
-				if (mftProcessOutput == S_OK)
-				{
-					onReceiveEncodedBuffer(outputDataBuffer.pSample);
-#ifdef PRINT_MBPS
-					double cur_weight = 1.0 / ++_num_frames;
-					DWORD bufferLength;
-					ThrowIfFailed(outputDataBuffer.pSample->GetTotalLength(&bufferLength));
-					_avg_byte_size = bufferLength * cur_weight + _avg_byte_size * (1 - cur_weight);
-
-					ComPtr<IMFMediaType> pInputType;
-					ThrowIfFailed(pEncoderTransform->GetInputCurrentType(0, &pInputType));
-					UINT32 num = 0, den = 0;
-					ThrowIfFailed(MFGetAttributeRatio(pInputType.Get(), MF_MT_FRAME_RATE, &num, &den));
-					double frameRate = static_cast<double>(num) / den;
-					double avg_megabytes_per_second = (_avg_byte_size * frameRate) / (1024.0 * 1024.0);
-					printf("\rAvg Encoding Size: %.2f MBps", avg_megabytes_per_second);
-#endif
-					// Release the completed sample if our smart pointer doesn't do it for us
-					if (outputDataBuffer.pSample && !pEncodedOutSample)
-						outputDataBuffer.pSample->Release();
-					if (outputDataBuffer.pEvents)
-						outputDataBuffer.pEvents->Release();
-				}
-
-				// More input is not an error condition but it means the allocated output sample is empty
-				if (mftProcessOutput != S_OK && mftProcessOutput != MF_E_TRANSFORM_NEED_MORE_INPUT)
-				{
-					printf("MFT ProcessOutput error result %.2X, MFT status %.2X.\n", mftProcessOutput, mftProccessStatus);
-					throw std::exception("Error getting H264 encoder transform output, error code %.2X.\n", mftProcessOutput);
-				}
 			}
 		}
 		catch (const std::exception& e)

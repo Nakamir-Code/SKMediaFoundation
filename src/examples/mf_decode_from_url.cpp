@@ -3,6 +3,7 @@
 #include "../nv12_tex.h"
 #include "../nv12_sprite.h"
 #include "../mf_decoder.h"
+#include "../mf_utility.h"
 #include "../error.h"
 #include <wrl/client.h>
 #include <mfapi.h>
@@ -17,7 +18,7 @@ using Microsoft::WRL::ComPtr;
 using namespace sk;
 
 namespace nakamir {
-	
+
 	// PRIVATE METHODS
 	static void mf_decode_from_url_impl(const wchar_t* filename, UINT32* width, UINT32* height);
 	static void mf_decode_source_reader_to_buffer(const ComPtr<IMFSourceReader>& pSourceReader, const ComPtr<IMFTransform>& pDecoderTransform);
@@ -41,7 +42,7 @@ namespace nakamir {
 
 	void mf_decode_from_url(const wchar_t* filename) {
 		sk_settings_t settings = {};
-		settings.app_name = "SKVideoDecoder";
+		settings.app_name = "MF Decode from URL";
 		settings.assets_folder = "Assets";
 		settings.display_preference = display_mode_mixedreality;
 		if (!sk_init(settings))
@@ -192,7 +193,7 @@ namespace nakamir {
 					ThrowIfFailed(pVideoSample->SetSampleTime(llSampleTime));
 					ThrowIfFailed(pVideoSample->GetSampleDuration(&llSampleDuration));
 
-					mf_decode_sample_to_buffer(pVideoSample.Get(), pDecoderTransform.Get(),
+					mf_transform_sample_to_buffer(pVideoSample.Get(), pDecoderTransform.Get(),
 						[](IMFSample* pDecodedSample) {
 							// Write the decoded sample to the nv12 texture
 							ComPtr<IMFMediaBuffer> buffer;

@@ -1,3 +1,4 @@
+#ifndef WINDOWS_UWP
 #include <stereokit.h>
 #include <stereokit_ui.h>
 #include "../nv12_tex.h"
@@ -54,9 +55,15 @@ namespace nakamir {
 	static nv12_tex_t nv12_tex;
 	static nv12_sprite_t nv12_sprite;
 
+#define PRINT_MBPS
+#ifdef PRINT_MBPS
+	static UINT64 _avg_byte_size = 0;
+	static UINT64 _num_frames = 0;
+#endif
+
 	void mf_roundtrip_webcam() {
 		sk_settings_t settings = {};
-		settings.app_name = "SKVideoDecoder";
+		settings.app_name = "MF Roundtrip Webcam";
 		settings.assets_folder = "Assets";
 		settings.display_preference = display_mode_mixedreality;
 		if (!sk_init(settings))
@@ -203,10 +210,27 @@ namespace nakamir {
 					ThrowIfFailed(pVideoSample->GetSampleDuration(&llSampleDuration));
 
 					// Encode the sample
-					mf_encode_sample_to_buffer(pVideoSample.Get(), pEncoderTransform.Get(),
-						[&pDecoderTransform](IMFSample* pEncodedSample) {
+					mf_transform_sample_to_buffer(pVideoSample.Get(), pEncoderTransform.Get(),
+						[&pDecoderTransform, &pEncoderTransform](IMFSample* pEncodedSample) {
+
+#ifdef PRINT_MBPS
+							double cur_weight = 1.0 / ++_num_frames;
+							DWORD bufferLength;
+							ThrowIfFailed(pEncodedSample->GetTotalLength(&bufferLength));
+							_avg_byte_size = bufferLength * cur_weight + _avg_byte_size * (1 - cur_weight);
+
+							ComPtr<IMFMediaType> pInputType;
+							ThrowIfFailed(pEncoderTransform->GetInputCurrentType(0, &pInputType));
+							UINT32 num = 0, den = 0;
+							ThrowIfFailed(MFGetAttributeRatio(pInputType.Get(), MF_MT_FRAME_RATE, &num, &den));
+							double frameRate = static_cast<double>(num) / den;
+							double avg_megabytes_per_second = (_avg_byte_size * frameRate) / (1024.0 * 1024.0);
+							printf("\rAvg Encoding Size: %.2f MBps", avg_megabytes_per_second);
+#endif
+
+
 							// Decode the sample
-							mf_decode_sample_to_buffer(pEncodedSample, pDecoderTransform.Get(),
+							mf_transform_sample_to_buffer(pEncodedSample, pDecoderTransform.Get(),
 								[](IMFSample* pDecodedSample) {
 									// Write the decoded sample to the nv12 texture
 									ComPtr<IMFMediaBuffer> buffer;
@@ -256,3 +280,4 @@ namespace nakamir {
 		}
 	}
 } // namespace nakamir
+#endif
