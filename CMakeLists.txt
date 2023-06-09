@@ -1,6 +1,8 @@
 # To use this template, 
 cmake_minimum_required(VERSION 3.11)
 project(SKMediaFoundation VERSION "0.1.0" LANGUAGES CXX C)
+set(CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_STANDARD 20)
 
 # Grab and build StereoKit from the GitHub repository. Here we're setting SK up
 # as a statically linked library.

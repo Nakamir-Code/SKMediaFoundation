@@ -13,12 +13,12 @@
 #include <mfreadwrite.h>
 #include <codecapi.h>
 #include <atomic>
+#include <format>
 #include <thread>
 
 #pragma comment(lib, "Mf.lib")
 
 using Microsoft::WRL::ComPtr;
-
 using namespace sk;
 
 namespace nakamir {
@@ -26,7 +26,7 @@ namespace nakamir {
 	const UINT32 bitrate = 5000000;
 
 	// PRIVATE METHODS
-	static void mf_roundtrip_webcam_impl(UINT32* width, UINT32* height);
+	static void mf_roundtrip_webcam_impl(UINT32* width, UINT32* height, UINT32* fps);
 	static void mf_source_reader_roundtrip(const ComPtr<IMFSourceReader>& pSourceReader, const ComPtr<IMFTransform>& pEncoderTransform, const ComPtr<IMFTransform>& pDecoderTransform);
 	static void mf_shutdown_thread();
 
@@ -44,6 +44,10 @@ namespace nakamir {
 
 	const float video_plane_width = 0.6f;
 	const vec2 video_window_padding = { 0.02f, 0.02f };
+
+	static UINT32 video_width;
+	static UINT32 video_height;
+	static UINT32 video_fps;
 	static vec2 video_aspect_ratio;
 	static matrix video_render_matrix;
 
@@ -62,9 +66,7 @@ namespace nakamir {
 			return;
 
 		// Read from the webcam, encode the sample, decode the sample, and finally render to the screen
-		UINT32 video_width;
-		UINT32 video_height;
-		mf_roundtrip_webcam_impl(&video_width, &video_height);
+		mf_roundtrip_webcam_impl(&video_width, &video_height, &video_fps);
 
 		// Set up the render plane based on the video dimensions
 		video_aspect_ratio = { video_plane_width, video_height / (float)video_width * video_plane_width };
@@ -80,11 +82,7 @@ namespace nakamir {
 			[]() {
 				ui_window_begin("Video", window_pose, video_aspect_ratio, ui_win_normal, ui_move_face_user);
 				ui_nextline();
-				ui_text("  Stats for Nerds");
-				ui_text("  w: , h: , fps: ");
-				ui_text("  Encoder Avg time: ");
-				ui_text("  Decoder Avg time: ");
-
+				ui_text(std::format("\t{}x{} @ {} fps", video_width, video_height, video_fps).c_str());
 				nv12_sprite_ui_image(nv12_sprite, video_render_matrix);
 				ui_window_end();
 			},
@@ -101,7 +99,7 @@ namespace nakamir {
 		}
 	}
 
-	static void mf_roundtrip_webcam_impl(UINT32* width, UINT32* height)
+	static void mf_roundtrip_webcam_impl(UINT32* width, UINT32* height, UINT32* fps)
 	{
 		try
 		{
@@ -135,14 +133,14 @@ namespace nakamir {
 			ComPtr<IMFMediaType> pInputMediaType;
 			ThrowIfFailed(pSourceReader->GetCurrentMediaType((DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM, pInputMediaType.GetAddressOf()));
 
-			UINT32 fps, den;
+			UINT32 den;
 			ThrowIfFailed(MFGetAttributeSize(pInputMediaType.Get(), MF_MT_FRAME_SIZE, width, height));
-			ThrowIfFailed(MFGetAttributeRatio(pInputMediaType.Get(), MF_MT_FRAME_RATE, &fps, &den));
-			mf_set_default_media_type(pInputMediaType.Get(), MFVideoFormat_NV12, bitrate, *width, *height, fps);
+			ThrowIfFailed(MFGetAttributeRatio(pInputMediaType.Get(), MF_MT_FRAME_RATE, fps, &den));
+			mf_set_default_media_type(pInputMediaType.Get(), MFVideoFormat_NV12, bitrate, *width, *height, *fps);
 
 			ComPtr<IMFMediaType> pOutputMediaType;
 			ThrowIfFailed(MFCreateMediaType(pOutputMediaType.GetAddressOf()));
-			mf_set_default_media_type(pOutputMediaType.Get(), MFVideoFormat_H264, bitrate, *width, *height, fps);
+			mf_set_default_media_type(pOutputMediaType.Get(), MFVideoFormat_H264, bitrate, *width, *height, *fps);
 
 			// Create encoder
 			mf_create_mft_software_encoder(pInputMediaType.Get(), pOutputMediaType.Get(), pEncoderTransform.GetAddressOf(), &ppEncoderActivate);
