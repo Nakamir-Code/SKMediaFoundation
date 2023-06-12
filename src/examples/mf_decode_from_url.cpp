@@ -190,8 +190,8 @@ namespace nakamir {
 					ThrowIfFailed(pVideoSample->SetSampleTime(llSampleTime));
 					ThrowIfFailed(pVideoSample->GetSampleDuration(&llSampleDuration));
 
-					mf_transform_sample_to_buffer(pVideoSample.Get(), pDecoderTransform.Get(),
-						[](IMFSample* pDecodedSample) {
+					mf_transform_sample_to_buffer(pDecoderTransform.Get(), pVideoSample.Get(),
+						[](IMFTransform* pDecoderTransform, IMFSample* pDecodedSample, void* pContext) {
 							// Write the decoded sample to the nv12 texture
 							ComPtr<IMFMediaBuffer> buffer;
 							ThrowIfFailed(pDecodedSample->GetBufferByIndex(0, buffer.GetAddressOf()));

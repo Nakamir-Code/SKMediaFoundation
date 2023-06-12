@@ -5,7 +5,6 @@
 #include <mferror.h>
 #include <mftransform.h>
 #include <wrl/client.h>
-#include <functional>
 #include <stereokit.h>
 
 using namespace sk;
@@ -36,7 +35,7 @@ namespace nakamir {
 		}
 	}
 
-	static void mf_transform_sample_to_buffer(IMFSample* pVideoSample, IMFTransform* pTransform, const std::function<void(IMFSample*)>& onReceiveBuffer)
+	static void mf_transform_sample_to_buffer(/**[in]**/ IMFTransform* pTransform, /**[in]**/ IMFSample* pVideoSample, /**[in]**/ void(*onReceiveBuffer)(IMFTransform*, IMFSample*, void*), /**[in]**/ void* pContext = nullptr)
 	{
 		try
 		{
@@ -92,7 +91,7 @@ namespace nakamir {
 
 				if (mftProcessOutput == S_OK)
 				{
-					onReceiveBuffer(outputDataBuffer.pSample);
+					onReceiveBuffer(pTransform, outputDataBuffer.pSample, pContext);
 
 					// Release the completed sample if our smart pointer doesn't do it for us
 					if (outputDataBuffer.pSample && !pOutSample)

@@ -209,9 +209,8 @@ namespace nakamir {
 					ThrowIfFailed(pVideoSample->GetSampleDuration(&llSampleDuration));
 
 					// Encode the sample
-					mf_transform_sample_to_buffer(pVideoSample.Get(), pEncoderTransform.Get(),
-						[&pDecoderTransform, &pEncoderTransform](IMFSample* pEncodedSample) {
-
+					mf_transform_sample_to_buffer(pEncoderTransform.Get(), pVideoSample.Get(),
+						[](IMFTransform* pEncoderTransform, IMFSample* pEncodedSample, void* pContext) {
 #if PRINT_MBPS
 							double cur_weight = 1.0 / ++_num_frames;
 							DWORD bufferLength;
@@ -231,8 +230,9 @@ namespace nakamir {
 							//printf("Clean Point? %d\n", cleanPoint);
 
 							// Decode the sample
-							mf_transform_sample_to_buffer(pEncodedSample, pDecoderTransform.Get(),
-								[](IMFSample* pDecodedSample) {
+							IMFTransform* pDecoderTransform = static_cast<IMFTransform*>(pContext);
+							mf_transform_sample_to_buffer(pDecoderTransform, pEncodedSample,
+								[](IMFTransform* pDecoderTransform, IMFSample* pDecodedSample, void* pContext) {
 									// Write the decoded sample to the nv12 texture
 									ComPtr<IMFMediaBuffer> buffer;
 									ThrowIfFailed(pDecodedSample->GetBufferByIndex(0, buffer.GetAddressOf()));
@@ -246,7 +246,7 @@ namespace nakamir {
 									nv12_tex_set_buffer(nv12_tex, byteBuffer);
 									ThrowIfFailed(buffer->Unlock());
 								});
-						}
+						}, pDecoderTransform.Get()
 					);
 				}
 			}
