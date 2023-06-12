@@ -19,6 +19,9 @@
 
 #pragma comment(lib, "Mf.lib")
 
+// Settings
+#define PRINT_MBPS 1
+
 using Microsoft::WRL::ComPtr;
 using namespace sk;
 
@@ -55,8 +58,7 @@ namespace nakamir {
 	static nv12_tex_t nv12_tex;
 	static nv12_sprite_t nv12_sprite;
 
-#define PRINT_MBPS
-#ifdef PRINT_MBPS
+#if PRINT_MBPS
 	static UINT64 _avg_byte_size = 0;
 	static UINT64 _num_frames = 0;
 #endif
@@ -91,10 +93,7 @@ namespace nakamir {
 				ui_text(std::format("\t{}x{} @ {} fps", video_width, video_height, video_fps).c_str());
 				nv12_sprite_ui_image(nv12_sprite, video_render_matrix);
 				ui_window_end();
-			},
-			[]() {
-				mf_shutdown_thread();
-			});
+			}, mf_shutdown_thread);
 
 		nv12_tex_release(nv12_tex);
 		nv12_sprite_release(nv12_sprite);
@@ -151,11 +150,11 @@ namespace nakamir {
 			mf_set_default_media_type(pOutputMediaType.Get(), MFVideoFormat_H264, bitrate, *width, *height, *fps);
 
 			// Create encoder
-			mf_create_mft_software_encoder(pInputMediaType.Get(), pOutputMediaType.Get(), pEncoderTransform.GetAddressOf(), &ppEncoderActivate);
+			mf_create_mft_video_encoder(pInputMediaType.Get(), pOutputMediaType.Get(), pEncoderTransform.GetAddressOf(), &ppEncoderActivate);
 			// Create decoder
-			_VIDEO_DECODER decoderType = mf_create_mft_software_decoder(pOutputMediaType.Get(), pInputMediaType.Get(), pDecoderTransform.GetAddressOf(), &ppDecoderActivate);
+			_VIDEO_DECODER decoderType = mf_create_mft_video_decoder(pOutputMediaType.Get(), pInputMediaType.Get(), pDecoderTransform.GetAddressOf(), &ppDecoderActivate);
 
-			// Apply H264 settings and update the output media type
+			// Apply H264 settings and update the media types
 			ThrowIfFailed(pInputMediaType->SetUINT32(MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_Base));
 			ThrowIfFailed(pDecoderTransform->SetOutputType(0, pInputMediaType.Get(), 0));
 		}
@@ -213,7 +212,7 @@ namespace nakamir {
 					mf_transform_sample_to_buffer(pVideoSample.Get(), pEncoderTransform.Get(),
 						[&pDecoderTransform, &pEncoderTransform](IMFSample* pEncodedSample) {
 
-#ifdef PRINT_MBPS
+#if PRINT_MBPS
 							double cur_weight = 1.0 / ++_num_frames;
 							DWORD bufferLength;
 							ThrowIfFailed(pEncodedSample->GetTotalLength(&bufferLength));
@@ -227,7 +226,9 @@ namespace nakamir {
 							double avg_megabytes_per_second = (_avg_byte_size * frameRate) / (1024.0 * 1024.0);
 							printf("\rAvg Encoding Size: %.2f MBps", avg_megabytes_per_second);
 #endif
-
+							//UINT32 cleanPoint = 0;
+							//ThrowIfFailed(pEncodedSample->GetUINT32(MFSampleExtension_CleanPoint, &cleanPoint));
+							//printf("Clean Point? %d\n", cleanPoint);
 
 							// Decode the sample
 							mf_transform_sample_to_buffer(pEncodedSample, pDecoderTransform.Get(),

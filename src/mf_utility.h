@@ -5,6 +5,7 @@
 #include <mferror.h>
 #include <mftransform.h>
 #include <wrl/client.h>
+#include <functional>
 #include <stereokit.h>
 
 using namespace sk;

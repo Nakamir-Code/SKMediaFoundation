@@ -20,8 +20,8 @@ using namespace sk;
 namespace nakamir {
 
 	// PRIVATE METHODS
-	static void mf_decode_from_url_impl(const wchar_t* filename, UINT32* width, UINT32* height);
-	static void mf_decode_source_reader_to_buffer(const ComPtr<IMFSourceReader>& pSourceReader, const ComPtr<IMFTransform>& pDecoderTransform);
+	static void mf_decode_from_url_impl(/**[in]**/ const wchar_t* filename, /**[out]**/ UINT32* width, /**[out]**/ UINT32* height);
+	static void mf_decode_source_reader_to_buffer(/**[in]**/ const ComPtr<IMFSourceReader>& pSourceReader, /**[in]**/ const ComPtr<IMFTransform>& pDecoderTransform);
 	static void mf_shutdown_thread();
 
 	static IMFActivate** ppActivate = NULL;
@@ -71,10 +71,7 @@ namespace nakamir {
 				ui_window_begin("Video", window_pose, video_aspect_ratio, ui_win_normal, ui_move_face_user);
 				nv12_sprite_ui_image(nv12_sprite, video_render_matrix);
 				ui_window_end();
-			},
-			[]() {
-				mf_shutdown_thread();
-			});
+			}, mf_shutdown_thread);
 
 		nv12_tex_release(nv12_tex);
 		nv12_sprite_release(nv12_sprite);
@@ -129,7 +126,7 @@ namespace nakamir {
 			// Get the width and height of the output video
 			ThrowIfFailed(MFGetAttributeSize(pOutputMediaType.Get(), MF_MT_FRAME_SIZE, width, height));
 
-			_VIDEO_DECODER decoderType = mf_create_mft_software_decoder(pInputMediaType.Get(), pOutputMediaType.Get(), pDecoderTransform.GetAddressOf(), &ppActivate);
+			_VIDEO_DECODER decoderType = mf_create_mft_video_decoder(pInputMediaType.Get(), pOutputMediaType.Get(), pDecoderTransform.GetAddressOf(), &ppActivate);
 
 			switch (decoderType)
 			{

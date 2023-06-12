@@ -19,7 +19,7 @@ using Microsoft::WRL::ComPtr;
 namespace nakamir {
 	static void mf_validate_stream_info(/**[in]**/ IMFTransform* pEncoderTransform);
 
-	void mf_create_mft_software_encoder(IMFMediaType* pInputMediaType, IMFMediaType* pOutputMediaType, IMFTransform** ppEncoderTransform, IMFActivate*** pppActivate)
+	void mf_create_mft_video_encoder(IMFMediaType* pInputMediaType, IMFMediaType* pOutputMediaType, IMFTransform** ppEncoderTransform, IMFActivate*** pppActivate)
 	{
 		try
 		{
@@ -102,6 +102,9 @@ namespace nakamir {
 
 			variant.ulVal = eAVEncAdaptiveMode_Resolution;
 			ThrowIfFailed(pCodecAPI->SetValue(&CODECAPI_AVEncAdaptiveMode, &variant));
+
+			variant.ulVal = eAVScenarioInfo_LiveStreaming; // eAVScenarioInfo_LiveStreaming, eAVScenarioInfo_CameraRecord
+			ThrowIfFailed(pCodecAPI->SetValue(&CODECAPI_AVScenarioInfo, &variant));
 
 			variant.vt = VT_BOOL;
 			variant.boolVal = VARIANT_TRUE;

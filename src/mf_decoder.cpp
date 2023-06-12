@@ -17,7 +17,7 @@ namespace nakamir {
 
 	static void mf_validate_stream_info(/**[in]**/ IMFTransform* pDecoderTransform);
 
-	_VIDEO_DECODER mf_create_mft_software_decoder(IMFMediaType* pInputMediaType, IMFMediaType* pOutputMediaType, IMFTransform** ppDecoderTransform, IMFActivate*** pppActivate)
+	_VIDEO_DECODER mf_create_mft_video_decoder(IMFMediaType* pInputMediaType, IMFMediaType* pOutputMediaType, IMFTransform** ppDecoderTransform, IMFActivate*** pppActivate)
 	{
 		_VIDEO_DECODER video_decoder = SOFTWARE_MFT_VIDEO_DECODER;
 		try
@@ -84,6 +84,15 @@ namespace nakamir {
 
 			// This attribute does not affect hardware-accelerated video decoding that uses DirectX Video Acceleration (DXVA)
 			ThrowIfFailed(pAttributes->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE));
+
+			// Set the hardware decoding parameters
+			ComPtr<ICodecAPI> pCodecAPI;
+			ThrowIfFailed((*ppDecoderTransform)->QueryInterface(IID_PPV_ARGS(pCodecAPI.GetAddressOf())));
+
+			VARIANT variant = {};
+			variant.vt = VT_UI4;
+			variant.ulVal = 1;
+			ThrowIfFailed(pCodecAPI->SetValue(&CODECAPI_AVLowLatencyMode, &variant));
 
 			// The decoder MFT must expose the MF_SA_D3D_AWARE attribute to TRUE
 			UINT32 isD3DAware = false;
