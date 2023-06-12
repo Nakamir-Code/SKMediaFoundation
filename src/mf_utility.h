@@ -5,6 +5,7 @@
 #include <mferror.h>
 #include <mftransform.h>
 #include <wrl/client.h>
+#include <format>
 #include <stereokit.h>
 
 using namespace sk;
@@ -87,7 +88,9 @@ namespace nakamir {
 					mftProcessOutput = pTransform->ProcessOutput(0, 1, &outputDataBuffer, &mftProccessStatus);
 				}
 
-				//printf("Process output result %.2X, MFT status %.2X.\n", mftProcessOutput, mftProccessStatus);
+				//char buffer[1024];
+				//std::snprintf(buffer, sizeof(buffer), "MFT ProcessOutput error result %.2X, MFT status %.2X", mftProcessOutput, mftProccessStatus);
+				//log_info(buffer);
 
 				if (mftProcessOutput == S_OK)
 				{
@@ -103,8 +106,7 @@ namespace nakamir {
 				// More input is not an error condition but it means the allocated output sample is empty
 				if (mftProcessOutput != S_OK && mftProcessOutput != MF_E_TRANSFORM_NEED_MORE_INPUT)
 				{
-					printf("MFT ProcessOutput error result %.2X, MFT status %.2X.\n", mftProcessOutput, mftProccessStatus);
-					throw std::exception("Error getting transform output, error code %.2X.\n", mftProcessOutput);
+					throw std::exception("Error getting transform output, error code %.2X", mftProcessOutput);
 				}
 			}
 		}

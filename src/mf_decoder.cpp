@@ -57,7 +57,7 @@ namespace nakamir {
 				throw std::exception("No decoders found! :(");
 			}
 
-			printf("\nDECODERS FOUND:\n");
+			log_info("DECODERS FOUND:");
 
 			for (UINT32 i = 0; i < count; i++)
 			{
@@ -68,11 +68,17 @@ namespace nakamir {
 					continue;
 				}
 
-				printf("\t- ");
-				if (i == 0) printf("[");
-				wprintf(pszName);
-				if (i == 0) printf("]");
-				printf("\n");
+				int requiredSize = WideCharToMultiByte(CP_UTF8, 0, pszName, -1, nullptr, 0, nullptr, nullptr);
+				char* pszNameBuffer = new char[requiredSize];
+				WideCharToMultiByte(CP_UTF8, 0, pszName, -1, pszNameBuffer, requiredSize, nullptr, nullptr);
+
+				std::string result = "\t- ";
+				if (i == 0) result += "[";
+				result += pszNameBuffer;
+				if (i == 0) result += "]";
+				log_info(result.c_str());
+
+				delete[] pszNameBuffer;
 				CoTaskMemFree(pszName);
 			}
 
@@ -179,24 +185,24 @@ namespace nakamir {
 				throw std::exception("Whole Samples, Single Sample Per Buffer, and Fixed Sample Size must be applied");
 			}
 
-			printf("\nInput stream info:\n");
-			printf("\tMax latency: %lld\n", InputStreamInfo.hnsMaxLatency);
-			printf("\tMin buffer size: %lu\n", InputStreamInfo.cbSize);
-			printf("\tMax lookahead: %lu\n", InputStreamInfo.cbMaxLookahead);
-			printf("\tAlignment: %lu\n", InputStreamInfo.cbAlignment);
+			log_info("Input stream info:");
+			log_info(std::format("\tMax latency: {}", InputStreamInfo.hnsMaxLatency).c_str());
+			log_info(std::format("\tMin buffer size: {}", InputStreamInfo.cbSize).c_str());
+			log_info(std::format("\tMax lookahead: {}", InputStreamInfo.cbMaxLookahead).c_str());
+			log_info(std::format("\tAlignment: {}", InputStreamInfo.cbAlignment).c_str());
 
-			printf("\nOutput stream info:\n");
-			printf("\tFlags: %lu\n", OutputStreamInfo.dwFlags);
-			printf("\tMin buffer size: %lu\n", OutputStreamInfo.cbSize);
-			printf("\tAlignment: %lu\n", OutputStreamInfo.cbAlignment);
+			log_info("Output stream info:");
+			log_info(std::format("\tFlags: {}", OutputStreamInfo.dwFlags).c_str());
+			log_info(std::format("\tMin buffer size: {}", OutputStreamInfo.cbSize).c_str());
+			log_info(std::format("\tAlignment: {}", OutputStreamInfo.cbAlignment).c_str());
 
 			if (OutputStreamInfo.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES)
 			{
-				printf("\t+---- Output stream provides samples ----+\n\n");
+				log_info("\t+---- Output stream provides samples ----+");
 			}
 			else
 			{
-				printf("\t+---- The decoder should allocate its own samples ----+\n\n");
+				log_info("\t+---- The decoder should allocate its own samples ----+");
 			}
 		}
 		catch (const std::exception& e)

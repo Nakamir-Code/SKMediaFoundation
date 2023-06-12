@@ -177,11 +177,11 @@ namespace nakamir {
 
 				if (flags & MF_SOURCE_READERF_STREAMTICK)
 				{
-					printf("\tStream tick.\n");
+					log_info("\tStream tick.");
 				}
 				if (flags & MF_SOURCE_READERF_ENDOFSTREAM)
 				{
-					printf("\tEnd of stream.\n");
+					log_info("\tEnd of stream.");
 					break;
 				}
 
@@ -199,7 +199,7 @@ namespace nakamir {
 							DWORD bufferLength;
 							ThrowIfFailed(buffer->GetCurrentLength(&bufferLength));
 
-							//printf("Sample size %i.\n", bufferLength);
+							//log_info(std::format("Sample size {}", bufferLength).c_str());
 
 							byte* byteBuffer = NULL;
 							DWORD maxLength = 0, currentLength = 0;

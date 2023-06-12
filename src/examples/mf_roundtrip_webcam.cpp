@@ -121,10 +121,18 @@ namespace nakamir {
 				throw std::exception("No webcams found!");
 			}
 
-			WCHAR* friendlyName;
+			WCHAR* friendlyName = nullptr;
 			UINT32 nameLength;
 			ThrowIfFailed(ppVideoActivate[0]->GetAllocatedString(MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, &friendlyName, &nameLength));
-			wprintf(L"Using webcam: %s\n", friendlyName);
+			if (!friendlyName) throw std::exception("Could not get the friendly name of the webcam!");
+			// Log the webcam name
+			int requiredSize = WideCharToMultiByte(CP_UTF8, 0, friendlyName, -1, nullptr, 0, nullptr, nullptr);
+			char* friendlyNameBuffer = new char[requiredSize];
+			WideCharToMultiByte(CP_UTF8, 0, friendlyName, -1, friendlyNameBuffer, requiredSize, nullptr, nullptr);
+			std::string result = "Using webcam: ";
+			result += friendlyNameBuffer;
+			log_info(result.c_str());
+			delete[] friendlyNameBuffer;
 
 			ThrowIfFailed(ppVideoActivate[0]->ActivateObject(IID_PPV_ARGS(pVideoSource.GetAddressOf())));
 
@@ -195,11 +203,11 @@ namespace nakamir {
 
 				if (flags & MF_SOURCE_READERF_STREAMTICK)
 				{
-					printf("\tStream tick.\n");
+					log_info("\tStream tick.");
 				}
 				if (flags & MF_SOURCE_READERF_ENDOFSTREAM)
 				{
-					printf("\tEnd of stream.\n");
+					log_info("\tEnd of stream.");
 					break;
 				}
 
@@ -227,7 +235,7 @@ namespace nakamir {
 #endif
 							//UINT32 cleanPoint = 0;
 							//ThrowIfFailed(pEncodedSample->GetUINT32(MFSampleExtension_CleanPoint, &cleanPoint));
-							//printf("Clean Point? %d\n", cleanPoint);
+							//log_info(std::format("Clean Point? {}", cleanPoint).c_str());
 
 							// Decode the sample
 							IMFTransform* pDecoderTransform = static_cast<IMFTransform*>(pContext);
