@@ -2,7 +2,7 @@
 #include <stereokit_ui.h>
 #include "../nv12_tex.h"
 #include "../nv12_sprite.h"
-#include "../mf_decoder.h"
+#include "../mf_video_decoder.h"
 #include "../mf_utility.h"
 #include "../error.h"
 #include <wrl/client.h>

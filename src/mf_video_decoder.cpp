@@ -1,4 +1,4 @@
-#include "mf_decoder.h"
+#include "mf_video_decoder.h"
 #include "mf_utility.h"
 #include "error.h"
 #include <mfplay.h>
@@ -6,10 +6,11 @@
 #include <mferror.h>
 #include <codecapi.h>
 #include <d3d11.h>
-#include <stereokit.h>
 #include <wrl/client.h>
-
-#pragma comment(lib, "mfuuid.lib")
+// UWP requires a different header for ICodecAPI: https://learn.microsoft.com/en-us/windows/win32/api/strmif/nn-strmif-icodecapi
+#ifdef WINDOWS_UWP
+#include <icodecapi.h>
+#endif
 
 using Microsoft::WRL::ComPtr;
 

@@ -16,6 +16,11 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(StereoKitC)
 
+if (WIN32)
+  add_definitions("-D_CRT_SECURE_NO_WARNINGS")
+  set(WINDOWS_LIBS mfuuid Mf)
+endif()
+
 set(NAK_SRC_CODE
 	src/error.h
 	src/mf_utility.h
@@ -25,11 +30,11 @@ set(NAK_SRC_CODE
 	src/nv12_sprite.cpp
 	src/nv12_sprite.h
 
-	src/mf_encoder.h
-	src/mf_encoder.cpp
+	src/mf_video_encoder.h
+	src/mf_video_encoder.cpp
 
-	src/mf_decoder.h
-	src/mf_decoder.cpp
+	src/mf_video_decoder.h
+	src/mf_video_decoder.cpp
 )
 
 set(NAK_EXAMPLES
@@ -48,7 +53,9 @@ add_executable( SKMediaFoundation
 
 # Link to dependencies
 target_link_libraries( SKMediaFoundation
-  PRIVATE StereoKitC
+  PRIVATE
+  StereoKitC
+  ${WINDOWS_LIBS}
 )
 
 # Prevent warning C4530
