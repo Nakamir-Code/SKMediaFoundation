@@ -18,7 +18,7 @@ FetchContent_MakeAvailable(StereoKitC)
 
 if (WIN32)
   add_definitions("-D_CRT_SECURE_NO_WARNINGS")
-  set(WINDOWS_LIBS mfuuid Mf)
+  set(WINDOWS_LIBS mfuuid Mf Mfplat)
 endif()
 
 set(NAK_SRC_CODE
