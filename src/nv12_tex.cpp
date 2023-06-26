@@ -16,11 +16,11 @@ namespace nakamir {
 		tex_t luminance_tex = tex_create(tex_type_image_nomips | tex_type_dynamic, tex_format_r8);
 		tex_t chrominance_tex = tex_create(tex_type_image_nomips | tex_type_dynamic, tex_format_r8g8);
 
-		uint8_t* luminance_data = sk_malloc_t(uint8_t, width * height);
+		uint8_t* luminance_data = sk_malloc_t(uint8_t, static_cast<size_t>(width) * static_cast<size_t>(height));
 		tex_set_colors(luminance_tex, width, height, luminance_data);
 		sk_free(luminance_data);
 
-		uint16_t* chrominance_data = sk_malloc_t(uint16_t, (width / 2) * (height / 2));
+		uint16_t* chrominance_data = sk_malloc_t(uint16_t, static_cast<size_t>(width / 2) * static_cast<size_t>(height / 2));
 		tex_set_colors(chrominance_tex, width / 2, height / 2, chrominance_data);
 		sk_free(chrominance_data);
 

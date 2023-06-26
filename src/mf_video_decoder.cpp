@@ -18,9 +18,9 @@ namespace nakamir {
 
 	static void mf_validate_stream_info(/**[in]**/ IMFTransform* pDecoderTransform);
 
-	_VIDEO_DECODER mf_create_mft_video_decoder(IMFMediaType* pInputMediaType, IMFMediaType* pOutputMediaType, IMFTransform** ppDecoderTransform, IMFActivate*** pppActivate)
+	_MFT_TYPE mf_create_mft_video_decoder(IMFMediaType* pInputMediaType, IMFMediaType* pOutputMediaType, IMFTransform** ppDecoderTransform, IMFActivate*** pppActivate)
 	{
-		_VIDEO_DECODER video_decoder = SOFTWARE_MFT_VIDEO_DECODER;
+		_MFT_TYPE mft_type = UNKNOWN_MFT_TYPE;
 		try
 		{
 			GUID inputMajorType = {};
@@ -92,6 +92,9 @@ namespace nakamir {
 			// This attribute does not affect hardware-accelerated video decoding that uses DirectX Video Acceleration (DXVA)
 			ThrowIfFailed(pAttributes->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE));
 
+			// Set low latency hint
+			ThrowIfFailed(pAttributes->SetUINT32(MF_LOW_LATENCY, TRUE));
+
 			// Set the hardware decoding parameters
 			ComPtr<ICodecAPI> pCodecAPI;
 			ThrowIfFailed((*ppDecoderTransform)->QueryInterface(IID_PPV_ARGS(pCodecAPI.GetAddressOf())));
@@ -100,6 +103,9 @@ namespace nakamir {
 			variant.vt = VT_UI4;
 			variant.ulVal = 1;
 			ThrowIfFailed(pCodecAPI->SetValue(&CODECAPI_AVLowLatencyMode, &variant));
+
+			// Our first assumption is a synchronous MFT unless we're told otherwise
+			mft_type = SOFTWARE_SYNC_MFT_TYPE;
 
 			// The decoder MFT must expose the MF_SA_D3D_AWARE attribute to TRUE
 			UINT32 isD3DAware = false;
@@ -125,20 +131,31 @@ namespace nakamir {
 					ThrowIfFailed(pD3DDevice->QueryInterface(__uuidof(ID3D10Multithread), (void**)pMultiThread.GetAddressOf()));
 					pMultiThread->SetMultithreadProtected(TRUE);
 
-					video_decoder = D3D11_MFT_VIDEO_DECODER;
+					// We still assume the MFT is synchronous until we check with MF_TRANSFORM_ASYNC
+					mft_type = D3D11_SYNC_MFT_TYPE;
 
 					log_info("Video decoder is hardware accelerated through DXVA");
 				}
 				catch (const std::exception& e)
 				{
 					log_err(e.what());
+					ThrowIfFailed((*ppDecoderTransform)->ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, NULL));
 				}
 			}
 
-			if (video_decoder != D3D11_MFT_VIDEO_DECODER)
+			// Unlock the selected asynchronous MFTs
+			// https://docs.microsoft.com/en-us/windows/win32/medfound/asynchronous-mfts#unlocking-asynchronous-mfts.
+			UINT32 async = FALSE;
+			HRESULT hr = pAttributes->GetUINT32(MF_TRANSFORM_ASYNC, &async);
+			if (async)
 			{
-				log_warn("Video decoder is not D3D aware, decoding may be slow.");
-				ThrowIfFailed((*ppDecoderTransform)->ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, NULL));
+				log_info("MFT encoder is asynchronous");
+				ThrowIfFailed(pAttributes->SetUINT32(MF_TRANSFORM_ASYNC_UNLOCK, TRUE));
+				mft_type = mft_type == D3D11_SYNC_MFT_TYPE ? D3D11_ASYNC_MFT_TYPE : SOFTWARE_ASYNC_MFT_TYPE;
+			}
+			else
+			{
+				log_info("MFT encoder is synchronous");
 			}
 
 			// Set the input media type
@@ -155,7 +172,7 @@ namespace nakamir {
 			throw e;
 		}
 
-		return video_decoder;
+		return mft_type;
 	}
 
 	static void mf_validate_stream_info(IMFTransform* pDecoderTransform)

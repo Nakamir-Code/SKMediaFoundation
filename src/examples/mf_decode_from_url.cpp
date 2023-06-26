@@ -126,23 +126,10 @@ namespace nakamir {
 			// Get the width and height of the output video
 			ThrowIfFailed(MFGetAttributeSize(pOutputMediaType.Get(), MF_MT_FRAME_SIZE, width, height));
 
-			_VIDEO_DECODER decoderType = mf_create_mft_video_decoder(pInputMediaType.Get(), pOutputMediaType.Get(), pDecoderTransform.GetAddressOf(), &ppActivate);
-
-			switch (decoderType)
-			{
-			case SOFTWARE_MFT_VIDEO_DECODER:
-			{
-				break;
-			}
-			case D3D11_MFT_VIDEO_DECODER:
-			{
-				ComPtr<IMFAttributes> pAttributes;
-				ThrowIfFailed(pDecoderTransform->GetAttributes(pAttributes.GetAddressOf()));
-				ThrowIfFailed(pAttributes->SetUINT32(CODECAPI_AVDecVideoAcceleration_H264, TRUE));
-				break;
-			}
-			default: throw std::exception("Decoder type not found!");
-			}
+			_MFT_TYPE decoderType = mf_create_mft_video_decoder(pInputMediaType.Get(), pOutputMediaType.Get(), pDecoderTransform.GetAddressOf(), &ppActivate);
+			ComPtr<IMFAttributes> pAttributes;
+			ThrowIfFailed(pDecoderTransform->GetAttributes(pAttributes.GetAddressOf()));
+			ThrowIfFailed(pAttributes->SetUINT32(CODECAPI_AVDecVideoAcceleration_H264, TRUE));
 		}
 		catch (const std::exception& e)
 		{

@@ -156,9 +156,9 @@ namespace nakamir {
 			mf_set_default_media_type(pOutputMediaType.Get(), MFVideoFormat_H264, bitrate, *width, *height, *fps);
 
 			// Create encoder
-			mf_create_mft_video_encoder(pInputMediaType.Get(), pOutputMediaType.Get(), pEncoderTransform.GetAddressOf(), &ppEncoderActivate);
+			_MFT_TYPE encoderType = mf_create_mft_video_encoder(pInputMediaType.Get(), pOutputMediaType.Get(), pEncoderTransform.GetAddressOf(), &ppEncoderActivate);
 			// Create decoder
-			_VIDEO_DECODER decoderType = mf_create_mft_video_decoder(pOutputMediaType.Get(), pInputMediaType.Get(), pDecoderTransform.GetAddressOf(), &ppDecoderActivate);
+			_MFT_TYPE decoderType = mf_create_mft_video_decoder(pOutputMediaType.Get(), pInputMediaType.Get(), pDecoderTransform.GetAddressOf(), &ppDecoderActivate);
 
 			// Apply H264 settings and update the media types
 			ThrowIfFailed(pInputMediaType->SetUINT32(MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_Base));
@@ -231,10 +231,6 @@ namespace nakamir {
 							double avg_megabytes_per_second = (_avg_byte_size * frameRate) / (1024.0 * 1024.0);
 							printf("\rAvg Encoding Size: %.2f MBps", avg_megabytes_per_second);
 #endif
-							//UINT32 cleanPoint = 0;
-							//ThrowIfFailed(pEncodedSample->GetUINT32(MFSampleExtension_CleanPoint, &cleanPoint));
-							//log_info(std::format("Clean Point? {}", cleanPoint).c_str());
-
 							// Decode the sample
 							IMFTransform* pDecoderTransform = static_cast<IMFTransform*>(pContext);
 							mf_transform_sample_to_buffer(pDecoderTransform, pEncodedSample,

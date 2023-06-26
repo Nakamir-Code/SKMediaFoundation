@@ -13,6 +13,15 @@ using Microsoft::WRL::ComPtr;
 
 namespace nakamir {
 
+	enum _MFT_TYPE
+	{
+		UNKNOWN_MFT_TYPE,
+		SOFTWARE_SYNC_MFT_TYPE,
+		SOFTWARE_ASYNC_MFT_TYPE,
+		D3D11_SYNC_MFT_TYPE,
+		D3D11_ASYNC_MFT_TYPE,
+	};
+
 	static void mf_set_default_media_type(/**[in]**/ IMFMediaType* pMediaType, const GUID& subType, UINT32 bitrate, UINT32 width, UINT32 height, UINT32 fps)
 	{
 		try
@@ -40,8 +49,46 @@ namespace nakamir {
 	{
 		try
 		{
+			HRESULT mftProcessInput = S_FALSE;
+			HRESULT mftProcessOutput = S_FALSE;
+			try
+			{
+				ComPtr<IMFMediaEventGenerator> pEventGen;
+				ThrowIfFailed(pTransform->QueryInterface(IID_PPV_ARGS(&pEventGen)));
+
+				ComPtr<IMFMediaEvent> pEvent;
+				ThrowIfFailed(pEventGen->GetEvent(0, pEvent.GetAddressOf()));
+
+				MediaEventType eventType;
+				ThrowIfFailed(pEvent->GetType(&eventType));
+
+				if (eventType == METransformNeedInput)
+				{
+					mftProcessInput = MF_E_TRANSFORM_NEED_MORE_INPUT;
+					mftProcessOutput = S_FALSE;
+				}
+				else if (eventType == METransformHaveOutput)
+				{
+					mftProcessInput = S_FALSE;
+					mftProcessOutput = S_OK;
+				}
+				else
+				{
+					mftProcessInput = S_FALSE;
+					mftProcessOutput = S_FALSE;
+				}
+			}
+			catch (const std::exception&)
+			{
+				mftProcessInput = MF_E_TRANSFORM_NEED_MORE_INPUT;
+				mftProcessOutput = S_OK;
+			}
+
 			// Apply the Media Foundation Transform
-			ThrowIfFailed(pTransform->ProcessInput(0, pVideoSample, 0));
+			if (mftProcessInput == MF_E_TRANSFORM_NEED_MORE_INPUT)
+			{
+				ThrowIfFailed(pTransform->ProcessInput(0, pVideoSample, 0));
+			}
 
 			MFT_OUTPUT_STREAM_INFO StreamInfo = {};
 			ThrowIfFailed(pTransform->GetOutputStreamInfo(0, &StreamInfo));
@@ -53,7 +100,6 @@ namespace nakamir {
 			outputDataBuffer.pSample = NULL;
 
 			DWORD mftProccessStatus = 0;
-			HRESULT mftProcessOutput = S_OK;
 
 			ComPtr<IMFSample> pOutSample;
 
@@ -101,6 +147,7 @@ namespace nakamir {
 						outputDataBuffer.pSample->Release();
 					if (outputDataBuffer.pEvents)
 						outputDataBuffer.pEvents->Release();
+					break;
 				}
 
 				// More input is not an error condition but it means the allocated output sample is empty
