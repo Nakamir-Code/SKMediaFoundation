@@ -108,9 +108,6 @@ namespace nakamir {
 			variant.ulVal = bitrate;
 			ThrowIfFailed(pCodecAPI->SetValue(&CODECAPI_AVEncCommonMeanBitRate, &variant));
 
-			variant.ulVal = eAVEncAdaptiveMode_Resolution;
-			ThrowIfFailed(pCodecAPI->SetValue(&CODECAPI_AVEncAdaptiveMode, &variant));
-
 			variant.ulVal = eAVScenarioInfo_LiveStreaming; // eAVScenarioInfo_LiveStreaming, eAVScenarioInfo_CameraRecord
 			ThrowIfFailed(pCodecAPI->SetValue(&CODECAPI_AVScenarioInfo, &variant));
 
