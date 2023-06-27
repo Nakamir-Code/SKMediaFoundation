@@ -54,7 +54,7 @@ namespace nakamir {
 			try
 			{
 				ComPtr<IMFMediaEventGenerator> pEventGen;
-				ThrowIfFailed(pTransform->QueryInterface(IID_PPV_ARGS(&pEventGen)));
+				ThrowIfFailed(pTransform->QueryInterface(IID_PPV_ARGS(pEventGen.GetAddressOf())));
 
 				ComPtr<IMFMediaEvent> pEvent;
 				ThrowIfFailed(pEventGen->GetEvent(0, pEvent.GetAddressOf()));

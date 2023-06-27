@@ -175,6 +175,9 @@ namespace nakamir {
 	{
 		try
 		{
+			// For the H264 software encoder, this message will fail initially, but for some
+			// hardware encoders, it is required. So let's just ignore its HRESULT
+			pEncoderTransform->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, NULL);
 			// Send messages to the encoder to start streaming
 			ThrowIfFailed(pEncoderTransform->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, NULL));
 			ThrowIfFailed(pEncoderTransform->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, NULL));
