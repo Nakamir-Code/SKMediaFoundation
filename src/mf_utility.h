@@ -45,12 +45,115 @@ namespace nakamir {
 		}
 	}
 
+	static void mf_create_sample(const unsigned char* buffer, int buffer_length, long long sample_duration, long long sample_time, /**[out]**/ IMFSample** ppSample)
+	{
+		try
+		{
+			ThrowIfFailed(MFCreateSample(ppSample));
+
+			// Create an IMFSample given its data
+			ComPtr<IMFMediaBuffer> pBuffer;
+			ThrowIfFailed(MFCreateMemoryBuffer(buffer_length, pBuffer.GetAddressOf()));
+			ThrowIfFailed((*ppSample)->AddBuffer(pBuffer.Get()));
+
+			BYTE* pData = nullptr;
+			ThrowIfFailed(pBuffer->Lock(&pData, nullptr, nullptr));
+			memcpy(pData, buffer, buffer_length);
+			ThrowIfFailed(pBuffer->Unlock());
+
+			ThrowIfFailed(pBuffer->SetCurrentLength(buffer_length));
+
+			ThrowIfFailed((*ppSample)->SetSampleDuration(sample_duration));
+			ThrowIfFailed((*ppSample)->SetSampleTime(sample_time));
+		}
+		catch (const std::exception& e)
+		{
+			log_err(e.what());
+			throw e;
+		}
+	}
+
+	static void mf_process_output(/**[in]**/ IMFTransform* pTransform, /**[in]**/ void(*onReceiveBuffer)(IMFTransform*, IMFSample*, void*) = nullptr, /**[in]**/ void* pContext = nullptr)
+	{
+		HRESULT mftProcessOutput = S_OK;
+
+		MFT_OUTPUT_STREAM_INFO StreamInfo = {};
+		ThrowIfFailed(pTransform->GetOutputStreamInfo(0, &StreamInfo));
+
+		MFT_OUTPUT_DATA_BUFFER outputDataBuffer = {};
+		outputDataBuffer.dwStreamID = 0;
+		outputDataBuffer.dwStatus = 0;
+		outputDataBuffer.pEvents = NULL;
+		outputDataBuffer.pSample = NULL;
+
+		DWORD mftProccessStatus = 0;
+
+		ComPtr<IMFSample> pOutSample;
+
+		// If the transform returns MF_E_NOTACCEPTING then it means that it has enough
+		// data to produce one or more output samples.
+		// Here, we generate new output by calling IMFTransform::ProcessOutput until it
+		// results in MF_E_TRANSFORM_NEED_MORE_INPUT which breaks out of the loop.
+		while (mftProcessOutput == S_OK)
+		{
+			if ((StreamInfo.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES) == 0)
+			{
+				ThrowIfFailed(MFCreateSample(pOutSample.ReleaseAndGetAddressOf()));
+
+				ComPtr<IMFMediaBuffer> pBuffer;
+				ThrowIfFailed(MFCreateMemoryBuffer(StreamInfo.cbSize, pBuffer.GetAddressOf()));
+				ThrowIfFailed(pOutSample->AddBuffer(pBuffer.Get()));
+
+				outputDataBuffer.pSample = pOutSample.Get();
+			}
+
+			mftProcessOutput = pTransform->ProcessOutput(0, 1, &outputDataBuffer, &mftProccessStatus);
+
+			if (outputDataBuffer.dwStatus & MFT_OUTPUT_DATA_BUFFER_FORMAT_CHANGE)
+			{
+				// Get the new media type for the stream
+				ComPtr<IMFMediaType> pNewMediaType;
+				ThrowIfFailed(pTransform->GetOutputAvailableType(0, 0, pNewMediaType.GetAddressOf()));
+				ThrowIfFailed(pTransform->SetOutputType(0, pNewMediaType.Get(), 0));
+
+				ThrowIfFailed(pTransform->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0));
+
+				mftProcessOutput = pTransform->ProcessOutput(0, 1, &outputDataBuffer, &mftProccessStatus);
+			}
+
+			//char buffer[1024];
+			//std::snprintf(buffer, sizeof(buffer), "MFT ProcessOutput error result %.2X, MFT status %.2X", mftProcessOutput, mftProccessStatus);
+			//log_info(buffer);
+
+			if (mftProcessOutput == S_OK)
+			{
+				if (onReceiveBuffer)
+				{
+					onReceiveBuffer(pTransform, outputDataBuffer.pSample, pContext);
+				}
+
+				// Release the completed sample if our smart pointer doesn't do it for us
+				if (outputDataBuffer.pSample && !pOutSample)
+					outputDataBuffer.pSample->Release();
+				if (outputDataBuffer.pEvents)
+					outputDataBuffer.pEvents->Release();
+				break;
+			}
+
+			// More input is not an error condition but it means the allocated output sample is empty
+			if (mftProcessOutput != S_OK && mftProcessOutput != MF_E_TRANSFORM_NEED_MORE_INPUT)
+			{
+				char buffer[1024];
+				std::snprintf(buffer, sizeof(buffer), "Error getting transform output, error code %.2X", mftProcessOutput);
+				throw std::exception(buffer);
+			}
+		}
+	}
+
 	static void mf_transform_sample_to_buffer(/**[in]**/ IMFTransform* pTransform, /**[in]**/ IMFSample* pVideoSample, /**[in]**/ void(*onReceiveBuffer)(IMFTransform*, IMFSample*, void*), /**[in]**/ void* pContext = nullptr)
 	{
 		try
 		{
-			HRESULT mftProcessOutput = S_OK;
-
 			ComPtr<IMFMediaEventGenerator> pEventGen;
 			HRESULT hr = pTransform->QueryInterface(IID_PPV_ARGS(pEventGen.GetAddressOf()));
 			if (SUCCEEDED(hr))
@@ -69,87 +172,52 @@ namespace nakamir {
 					ThrowIfFailed(pTransform->ProcessInput(0, pVideoSample, 0));
 				}
 
-				if (eventType != METransformHaveOutput)
+				if (eventType == METransformHaveOutput)
 				{
-					mftProcessOutput = S_FALSE;
+					mf_process_output(pTransform, onReceiveBuffer, pContext);
 				}
 			}
 			else
 			{
 				ThrowIfFailed(pTransform->ProcessInput(0, pVideoSample, 0));
-			}
-
-			MFT_OUTPUT_STREAM_INFO StreamInfo = {};
-			ThrowIfFailed(pTransform->GetOutputStreamInfo(0, &StreamInfo));
-
-			MFT_OUTPUT_DATA_BUFFER outputDataBuffer = {};
-			outputDataBuffer.dwStreamID = 0;
-			outputDataBuffer.dwStatus = 0;
-			outputDataBuffer.pEvents = NULL;
-			outputDataBuffer.pSample = NULL;
-
-			DWORD mftProccessStatus = 0;
-
-			ComPtr<IMFSample> pOutSample;
-
-			// If the transform returns MF_E_NOTACCEPTING then it means that it has enough
-			// data to produce one or more output samples.
-			// Here, we generate new output by calling IMFTransform::ProcessOutput until it
-			// results in MF_E_TRANSFORM_NEED_MORE_INPUT which breaks out of the loop.
-			while (mftProcessOutput == S_OK)
-			{
-				if ((StreamInfo.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES) == 0)
-				{
-					ThrowIfFailed(MFCreateSample(pOutSample.ReleaseAndGetAddressOf()));
-
-					ComPtr<IMFMediaBuffer> pBuffer;
-					ThrowIfFailed(MFCreateMemoryBuffer(StreamInfo.cbSize, pBuffer.GetAddressOf()));
-					ThrowIfFailed(pOutSample->AddBuffer(pBuffer.Get()));
-
-					outputDataBuffer.pSample = pOutSample.Get();
-				}
-
-				mftProcessOutput = pTransform->ProcessOutput(0, 1, &outputDataBuffer, &mftProccessStatus);
-
-				if (outputDataBuffer.dwStatus & MFT_OUTPUT_DATA_BUFFER_FORMAT_CHANGE)
-				{
-					// Get the new media type for the stream
-					ComPtr<IMFMediaType> pNewMediaType;
-					ThrowIfFailed(pTransform->GetOutputAvailableType(0, 0, pNewMediaType.GetAddressOf()));
-					ThrowIfFailed(pTransform->SetOutputType(0, pNewMediaType.Get(), 0));
-
-					ThrowIfFailed(pTransform->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0));
-
-					mftProcessOutput = pTransform->ProcessOutput(0, 1, &outputDataBuffer, &mftProccessStatus);
-				}
-
-				//char buffer[1024];
-				//std::snprintf(buffer, sizeof(buffer), "MFT ProcessOutput error result %.2X, MFT status %.2X", mftProcessOutput, mftProccessStatus);
-				//log_info(buffer);
-
-				if (mftProcessOutput == S_OK)
-				{
-					onReceiveBuffer(pTransform, outputDataBuffer.pSample, pContext);
-
-					// Release the completed sample if our smart pointer doesn't do it for us
-					if (outputDataBuffer.pSample && !pOutSample)
-						outputDataBuffer.pSample->Release();
-					if (outputDataBuffer.pEvents)
-						outputDataBuffer.pEvents->Release();
-					break;
-				}
-
-				// More input is not an error condition but it means the allocated output sample is empty
-				if (mftProcessOutput != S_OK && mftProcessOutput != MF_E_TRANSFORM_NEED_MORE_INPUT)
-				{
-					throw std::exception("Error getting transform output, error code %.2X", mftProcessOutput);
-				}
+				mf_process_output(pTransform, onReceiveBuffer, pContext);
 			}
 		}
 		catch (const std::exception& e)
 		{
 			log_err(e.what());
 			throw e;
+		}
+	}
+
+	static void mf_drain_pending_outputs(/**[in]**/ IMFTransform* pTransform)
+	{
+		ComPtr<IMFMediaEventGenerator> pEventGen;
+		HRESULT hr = pTransform->QueryInterface(IID_PPV_ARGS(pEventGen.GetAddressOf()));
+		if (SUCCEEDED(hr))
+		{
+			try
+			{
+				ComPtr<IMFMediaEventGenerator> pEventGen;
+				ThrowIfFailed(pTransform->QueryInterface(IID_PPV_ARGS(pEventGen.GetAddressOf())));
+
+				ComPtr<IMFMediaEvent> pEvent;
+				while (SUCCEEDED(pEventGen->GetEvent(MF_EVENT_FLAG_NO_WAIT, pEvent.GetAddressOf())))
+				{
+					MediaEventType eventType;
+					ThrowIfFailed(pEvent->GetType(&eventType));
+
+					if (eventType == METransformHaveOutput)
+					{
+						mf_process_output(pTransform);
+					}
+				}
+			}
+			catch (const std::exception& e)
+			{
+				log_err(e.what());
+				throw e;
+			}
 		}
 	}
 } // namespace nakamir
