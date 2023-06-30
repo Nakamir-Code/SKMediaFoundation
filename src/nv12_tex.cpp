@@ -45,12 +45,12 @@ namespace nakamir {
 		sk_free(nv12_tex);
 	}
 
-	void nv12_tex_set_buffer(nv12_tex_t nv12_tex, const unsigned char* encoded_image_buffer, int offset) {
+	void nv12_tex_set_buffer_cpu(nv12_tex_t nv12_tex, const unsigned char* encoded_image_buffer, int offset) {
 
 		// add the offset if there is one
 		encoded_image_buffer += offset;
 
-		ID3D11Device* pD3D_device = (ID3D11Device*)backend_d3d11_get_d3d_device();
+		ID3D11Device* pD3DDevice = (ID3D11Device*)backend_d3d11_get_d3d_device();
 
 		// For dynamic textures, just upload the new value into the texture!
 		D3D11_MAPPED_SUBRESOURCE tex_mem = {};
@@ -58,7 +58,7 @@ namespace nakamir {
 		bool on_main = backend_d3d11_get_main_thread_id() == GetCurrentThreadId();
 		ID3D11DeviceContext* pContext;
 		if (on_main) {
-			pD3D_device->GetImmediateContext(&pContext);
+			pD3DDevice->GetImmediateContext(&pContext);
 		}
 		else {
 			pContext = (ID3D11DeviceContext*)backend_d3d11_get_deferred_d3d_context();
@@ -87,5 +87,32 @@ namespace nakamir {
 		if (!on_main) {
 			ReleaseMutex(backend_d3d11_get_deferred_mtx());
 		}
+	}
+
+	void nv12_tex_set_buffer_gpu(nv12_tex_t nv12_tex, ID3D11Texture2D* d3d_texture) {
+		return;
+		/*
+		ID3D11Device* pD3DDevice = (ID3D11Device*)backend_d3d11_get_d3d_device();
+
+		// For dynamic textures, just upload the new value into the texture!
+		D3D11_MAPPED_SUBRESOURCE dst_tex_mem = {};
+		D3D11_MAPPED_SUBRESOURCE src_tex_mem = {};
+
+		bool on_main = backend_d3d11_get_main_thread_id() == GetCurrentThreadId();
+		ID3D11DeviceContext* pContext;
+		if (on_main) {
+			pD3DDevice->GetImmediateContext(&pContext);
+		}
+		else {
+			pContext = (ID3D11DeviceContext*)backend_d3d11_get_deferred_d3d_context();
+			WaitForSingleObject(backend_d3d11_get_deferred_mtx(), INFINITE);
+		}
+
+		// TODO
+
+		if (!on_main) {
+			ReleaseMutex(backend_d3d11_get_deferred_mtx());
+		}
+		*/
 	}
 } // namespace nakamir

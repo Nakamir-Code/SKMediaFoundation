@@ -191,7 +191,7 @@ namespace nakamir {
 							byte* byteBuffer = NULL;
 							DWORD maxLength = 0, currentLength = 0;
 							ThrowIfFailed(buffer->Lock(&byteBuffer, &maxLength, &currentLength));
-							nv12_tex_set_buffer(nv12_tex, byteBuffer);
+							nv12_tex_set_buffer_cpu(nv12_tex, byteBuffer);
 							ThrowIfFailed(buffer->Unlock());
 						});
 				}

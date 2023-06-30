@@ -16,6 +16,7 @@
 #include <atomic>
 #include <format>
 #include <thread>
+#include <d3d11_1.h>
 
 // Settings
 #define PRINT_MBPS 1
@@ -39,6 +40,7 @@ namespace nakamir {
 	static ComPtr<IMFSourceReader> pSourceReader;
 	static ComPtr<IMFTransform> pEncoderTransform;
 	static ComPtr<IMFTransform> pDecoderTransform;
+	static ComPtr<IMFSample> pD3DSample;
 	static std::thread sourceReaderThread;
 	static std::atomic_bool _cancellationToken;
 
@@ -160,6 +162,37 @@ namespace nakamir {
 			// Create decoder
 			_MFT_TYPE decoderType = mf_create_mft_video_decoder(pOutputMediaType.Get(), pInputMediaType.Get(), pDecoderTransform.GetAddressOf(), &ppDecoderActivate);
 
+			if ((encoderType == D3D11_ASYNC_MFT_TYPE || encoderType == D3D11_SYNC_MFT_TYPE)
+				&& (decoderType == D3D11_ASYNC_MFT_TYPE || decoderType == D3D11_SYNC_MFT_TYPE))
+			{
+				D3D11_TEXTURE2D_DESC desc = { 0 };
+				desc.Format = DXGI_FORMAT_NV12;
+				desc.Width = video_width;
+				desc.Height = video_height;
+				desc.MipLevels = 1;
+				desc.ArraySize = 1;
+				desc.SampleDesc.Count = 1;
+
+				ComPtr<ID3D11Device> pD3DDevice = (ID3D11Device*)backend_d3d11_get_d3d_device();
+				ComPtr<ID3D11Texture2D> pSurface;
+				ThrowIfFailed(pD3DDevice->CreateTexture2D(&desc, NULL, pSurface.GetAddressOf()));
+
+				ThrowIfFailed(MFCreateSample(pD3DSample.GetAddressOf()));
+
+				// DXGI stuff -- PopulateInputSampleBuffer
+				ComPtr<IMFMediaBuffer> pInputBuffer;
+				ThrowIfFailed(MFCreateDXGISurfaceBuffer(__uuidof(ID3D11Texture2D),
+					pSurface.Get(), 0, FALSE, pInputBuffer.GetAddressOf()));
+
+				// Some encoder MFTs (e.g. Qualcomm) depend on the sample buffer having a
+				// valid current length. Call GetMaxLength() to compute the plane size.
+				DWORD buffer_length = 0;
+				ThrowIfFailed(pInputBuffer->GetMaxLength(&buffer_length));
+				ThrowIfFailed(pInputBuffer->SetCurrentLength(buffer_length));
+
+				ThrowIfFailed(pD3DSample->AddBuffer(pInputBuffer.Get()));
+			}
+
 			// Apply H264 settings and update the media types
 			ThrowIfFailed(pInputMediaType->SetUINT32(MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_Base));
 			ThrowIfFailed(pDecoderTransform->SetOutputType(0, pInputMediaType.Get(), 0));
@@ -217,8 +250,21 @@ namespace nakamir {
 					ThrowIfFailed(pVideoSample->SetSampleTime(llSampleTime));
 					ThrowIfFailed(pVideoSample->GetSampleDuration(&llSampleDuration));
 
+					ComPtr<IMFSample> pInputSample;
+					if (pD3DSample)
+					{
+						ComPtr<IMFMediaBuffer> pInputBuffer;
+						ThrowIfFailed(pD3DSample->GetBufferByIndex(0, pInputBuffer.GetAddressOf()));
+						ThrowIfFailed(pVideoSample->CopyToBuffer(pInputBuffer.Get()));
+						pInputSample = pD3DSample;
+					}
+					else
+					{
+						pInputSample = pVideoSample;
+					}
+
 					// Encode the sample
-					mf_transform_sample_to_buffer(pEncoderTransform.Get(), pVideoSample.Get(),
+					mf_transform_sample_to_buffer(pEncoderTransform.Get(), pInputSample.Get(),
 						[](IMFTransform* pEncoderTransform, IMFSample* pEncodedSample, void* pContext) {
 #if PRINT_MBPS
 							double cur_weight = 1.0 / ++_num_frames;
@@ -239,20 +285,38 @@ namespace nakamir {
 							mf_transform_sample_to_buffer(pDecoderTransform, pEncodedSample,
 								[](IMFTransform* pDecoderTransform, IMFSample* pDecodedSample, void* pContext) {
 									// Write the decoded sample to the nv12 texture
-									ComPtr<IMFMediaBuffer> buffer;
-									ThrowIfFailed(pDecodedSample->GetBufferByIndex(0, buffer.GetAddressOf()));
+									ComPtr<IMFMediaBuffer> pBuffer;
+									ThrowIfFailed(pDecodedSample->GetBufferByIndex(0, pBuffer.GetAddressOf()));
+#if TODO
+									// A simple check to see if we're keeping data on the GPU versus CPU
+									if (pD3DSample)
+									{
+										ComPtr<IMFDXGIBuffer> pDXGIBuffer;
+										ThrowIfFailed(pBuffer.As(&pDXGIBuffer));
 
-									DWORD bufferLength;
-									ThrowIfFailed(buffer->GetCurrentLength(&bufferLength));
+										ComPtr<ID3D11Texture2D> pD3D11Texture;
+										pDXGIBuffer->GetResource(__uuidof(ID3D11Texture2D), &pD3D11Texture);
 
+										nv12_tex_set_buffer_gpu(nv12_tex, pD3D11Texture.Get());
+									}
+									else
+									{
+										byte* byteBuffer = NULL;
+										DWORD maxLength = 0, currentLength = 0;
+										ThrowIfFailed(pBuffer->Lock(&byteBuffer, &maxLength, &currentLength));
+										nv12_tex_set_buffer_cpu(nv12_tex, byteBuffer);
+										ThrowIfFailed(pBuffer->Unlock());
+									}
+#else
 									byte* byteBuffer = NULL;
 									DWORD maxLength = 0, currentLength = 0;
-									ThrowIfFailed(buffer->Lock(&byteBuffer, &maxLength, &currentLength));
-									nv12_tex_set_buffer(nv12_tex, byteBuffer);
-									ThrowIfFailed(buffer->Unlock());
+									ThrowIfFailed(pBuffer->Lock(&byteBuffer, &maxLength, &currentLength));
+									nv12_tex_set_buffer_cpu(nv12_tex, byteBuffer);
+									ThrowIfFailed(pBuffer->Unlock());
+#endif
 								});
 						}, pDecoderTransform.Get()
-					);
+							);
 				}
 			}
 		}

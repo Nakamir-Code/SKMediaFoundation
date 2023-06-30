@@ -25,6 +25,7 @@ namespace nakamir {
 
 	nv12_tex_t nv12_tex_create(int width, int height);
 	void nv12_tex_release(nv12_tex_t nv12_tex);
-	void nv12_tex_set_buffer(nv12_tex_t nv12_tex, const unsigned char* encoded_image_buffer, int offset = 0);
+	void nv12_tex_set_buffer_cpu(nv12_tex_t nv12_tex, const unsigned char* encoded_image_buffer, int offset = 0);
+	void nv12_tex_set_buffer_gpu(nv12_tex_t nv12_tex, ID3D11Texture2D* d3d_texture);
 
 } // namespace nakamir
