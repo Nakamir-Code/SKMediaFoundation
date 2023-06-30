@@ -49,9 +49,11 @@ namespace nakamir {
 	{
 		try
 		{
-			HRESULT mftProcessInput = S_FALSE;
-			HRESULT mftProcessOutput = S_FALSE;
-			try
+			HRESULT mftProcessOutput = S_OK;
+
+			ComPtr<IMFMediaEventGenerator> pEventGen;
+			HRESULT hr = pTransform->QueryInterface(IID_PPV_ARGS(pEventGen.GetAddressOf()));
+			if (SUCCEEDED(hr))
 			{
 				ComPtr<IMFMediaEventGenerator> pEventGen;
 				ThrowIfFailed(pTransform->QueryInterface(IID_PPV_ARGS(pEventGen.GetAddressOf())));
@@ -64,28 +66,15 @@ namespace nakamir {
 
 				if (eventType == METransformNeedInput)
 				{
-					mftProcessInput = MF_E_TRANSFORM_NEED_MORE_INPUT;
-					mftProcessOutput = S_FALSE;
+					ThrowIfFailed(pTransform->ProcessInput(0, pVideoSample, 0));
 				}
-				else if (eventType == METransformHaveOutput)
-				{
-					mftProcessInput = S_FALSE;
-					mftProcessOutput = S_OK;
-				}
-				else
-				{
-					mftProcessInput = S_FALSE;
-					mftProcessOutput = S_FALSE;
-				}
-			}
-			catch (const std::exception&)
-			{
-				mftProcessInput = MF_E_TRANSFORM_NEED_MORE_INPUT;
-				mftProcessOutput = S_OK;
-			}
 
-			// Apply the Media Foundation Transform
-			if (mftProcessInput == MF_E_TRANSFORM_NEED_MORE_INPUT)
+				if (eventType != METransformHaveOutput)
+				{
+					mftProcessOutput = S_FALSE;
+				}
+			}
+			else
 			{
 				ThrowIfFailed(pTransform->ProcessInput(0, pVideoSample, 0));
 			}
